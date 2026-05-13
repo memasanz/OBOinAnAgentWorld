@@ -70,9 +70,30 @@ After creation:
 2. **Certificates & secrets** → New client secret → save as `APIM_OBO_MIDDLETIER_CLIENT_SECRET`
 3. Note the **Application (client) ID** → `APIM_OBO_MIDDLETIER_CLIENT_ID`
 4. Note the **Tenant ID** → `TENANT_ID`
-5. **API permissions** → Add a permission:
-   - **SharePoint** → Delegated → `Sites.Read.All` (or `AllSites.Read`, etc.)
-   - Click **Grant admin consent**
+5. **API permissions** → Add a permission → **SharePoint** → **Delegated permissions**.
+   Pick the *minimum* permissions you actually need. Common choices:
+
+   | Permission | When to use |
+   |---|---|
+   | `AllSites.Read` | Read items in all site collections the user can access |
+   | `AllSites.Write` | Read + write items in all site collections the user can access |
+   | `AllSites.Manage` | Full control of site collections the user can access |
+   | `Sites.Search.All` | Run search queries |
+   | `MyFiles.Read` | Read the user's OneDrive files |
+   | `MyFiles.Write` | Read + write the user's OneDrive files |
+   | `User.Read.All` | Read user profile info |
+
+   For the example endpoint (`/sites/dataforfishing`), `AllSites.Read` is
+   typically sufficient.
+
+   - Click **Grant admin consent** for the tenant.
+
+   > ⚠️ OBO **preserves the user's identity**. Even with `AllSites.Read`
+   > granted, the user must still have access to the specific site
+   > (`/sites/dataforfishing`) in SharePoint itself. The delegated permission
+   > defines what the *app* is allowed to do; SharePoint's own ACLs decide
+   > what the *user* sees.
+
 6. **Manifest** → set `"accessTokenAcceptedVersion": 2`
 
 > **Recommended pattern:** use this single app registration as both the audience
