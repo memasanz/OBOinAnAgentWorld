@@ -95,7 +95,20 @@ In **Entra ID → App registrations → `apim-obo-middletier`**:
    on the app at once — both the optional (`User.Read`) and the required
    (`.All`) ones. One button covers everything.
 2. Confirm the app still has:
-   - **Expose an API** → scope `access_as_user` (audience for the user token)
+   - **Expose an API** → scope `access_as_user` (audience for the user token).
+     If you haven't created it yet, click **Expose an API → + Add a scope** and
+     fill in:
+     - Application ID URI: `api://<APIM_OBO_MIDDLETIER_CLIENT_ID>` (accept the default GUID-based URI)
+     - Scope name: `access_as_user`
+     - Who can consent? **Admins and users**
+     - Admin consent display name: `Access Microsoft Graph on behalf of the signed-in user`
+     - Admin consent description: `Allows the application to call Microsoft Graph as the signed-in user via On-Behalf-Of.`
+     - User consent display name: `Access Microsoft Graph on your behalf`
+     - User consent description: `Allows the app to read Microsoft Graph data as you.`
+     - State: **Enabled**
+
+     ![Expose an API — Add a scope](./images/expose_api_01.jpg)
+
    - A valid **client secret** → `APIM_OBO_MIDDLETIER_CLIENT_SECRET`
    - `"accessTokenAcceptedVersion": 2` in the manifest
 
