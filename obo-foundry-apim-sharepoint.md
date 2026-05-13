@@ -73,20 +73,44 @@ After creation:
 5. **API permissions** → Add a permission → **SharePoint** → **Delegated permissions**.
    Pick the *minimum* permissions you actually need. Common choices:
 
-   | Permission | When to use |
-   |---|---|
-   | `AllSites.Read` | Read items in all site collections the user can access |
-   | `AllSites.Write` | Read + write items in all site collections the user can access |
-   | `AllSites.Manage` | Full control of site collections the user can access |
-   | `Sites.Search.All` | Run search queries |
-   | `MyFiles.Read` | Read the user's OneDrive files |
-   | `MyFiles.Write` | Read + write the user's OneDrive files |
-   | `User.Read.All` | Read user profile info |
+   | Permission | Admin consent required? | When to use |
+   |---|---|---|
+   | `User.Read` (Microsoft Graph) | No | Sign in + read user profile |
+   | `AllSites.Read` | **Yes** | Read items in all site collections the user can access |
+   | `AllSites.Write` | **Yes** | Read + write items in all site collections the user can access |
+   | `AllSites.Manage` | **Yes** | Full control of site collections the user can access |
+   | `Sites.Search.All` | **Yes** | Run search queries |
+   | `MyFiles.Read` | **Yes** | Read the user's OneDrive files |
+   | `MyFiles.Write` | **Yes** | Read + write the user's OneDrive files |
 
    For the example endpoint (`/sites/dataforfishing`), `AllSites.Read` is
    typically sufficient.
 
-   - Click **Grant admin consent** for the tenant.
+   Click **Grant admin consent for `<tenant>`** at the top of the permissions list.
+
+   ### About admin consent
+
+   The Azure portal labels each permission with **Admin consent required: Yes/No**.
+
+   - **No** (e.g., `User.Read`): each user *can* consent for themselves on first
+     sign-in. They'll see a prompt like *"App needs permission to sign you in
+     and read your profile."*
+   - **Yes** (anything ending in `.All`, or anything that reads/writes data
+     across users / the tenant): **only an admin can consent**. Users cannot
+     self-consent.
+
+   **Even when admin consent isn't required, you should still grant it for the AI Foundry scenario:**
+
+   | Without admin consent | With admin consent |
+   |---|---|
+   | Each user sees a consent prompt on first use | Silent for all users |
+   | AI Foundry / non-interactive flows may not surface the prompt cleanly | Just works |
+   | OBO can fail with `consent_required` if the user hasn't consented yet | OBO works immediately |
+   | Per-user consent — must be revoked per-user | Tenant-wide, centrally managed |
+
+   Clicking **Grant admin consent for `<tenant>`** consents to *all* permissions
+   on the app at once — both the optional (`User.Read`) and the required
+   (`.All`) ones. One button covers everything.
 
    > ⚠️ OBO **preserves the user's identity**. Even with `AllSites.Read`
    > granted, the user must still have access to the specific site

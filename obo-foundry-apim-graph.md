@@ -58,13 +58,42 @@ SharePoint flow. Just add the Graph permissions to it.
 
 In **Entra ID → App registrations → `apim-obo-middletier`**:
 
-1. **API permissions** → Add a permission → **Microsoft Graph** → **Delegated**:
-   - Pick the *minimum* permissions you actually need, e.g.:
-     - `User.Read`
-     - `Sites.Read.All` (for SharePoint via Graph)
-     - `Files.Read.All`
-     - `Mail.Read` (only if needed)
-   - Click **Grant admin consent**
+1. **API permissions** → Add a permission → **Microsoft Graph** → **Delegated permissions**.
+   Pick the *minimum* permissions you actually need. Common choices:
+
+   | Permission | Admin consent required? | When to use |
+   |---|---|---|
+   | `User.Read` | No | Sign in + read the signed-in user's own profile |
+   | `Sites.Read.All` | **Yes** | Read items in all SharePoint sites the user can access |
+   | `Files.Read.All` | **Yes** | Read all files the user can access (OneDrive + SP) |
+   | `Mail.Read` | **Yes** | Read the user's mail |
+   | `Calendars.Read` | **Yes** | Read the user's calendar |
+
+   Click **Grant admin consent for `<tenant>`** at the top of the permissions list.
+
+   ### About admin consent
+
+   The Azure portal labels each permission with **Admin consent required: Yes/No**.
+
+   - **No** (e.g., `User.Read`): each user *can* consent for themselves on first
+     sign-in. They'll see a prompt like *"App needs permission to sign you in
+     and read your profile."*
+   - **Yes** (anything ending in `.All`, or anything that reads/writes data
+     across users / the tenant): **only an admin can consent**. Users cannot
+     self-consent.
+
+   **Even when admin consent isn't required, you should still grant it for the AI Foundry scenario:**
+
+   | Without admin consent | With admin consent |
+   |---|---|
+   | Each user sees a consent prompt on first use | Silent for all users |
+   | AI Foundry / non-interactive flows may not surface the prompt cleanly | Just works |
+   | OBO can fail with `consent_required` if the user hasn't consented yet | OBO works immediately |
+   | Per-user consent — must be revoked per-user | Tenant-wide, centrally managed |
+
+   Clicking **Grant admin consent for `<tenant>`** consents to *all* permissions
+   on the app at once — both the optional (`User.Read`) and the required
+   (`.All`) ones. One button covers everything.
 2. Confirm the app still has:
    - **Expose an API** → scope `access_as_user` (audience for the user token)
    - A valid **client secret** → `APIM_OBO_MIDDLETIER_CLIENT_SECRET`
