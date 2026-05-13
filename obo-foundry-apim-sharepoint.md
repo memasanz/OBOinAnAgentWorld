@@ -28,7 +28,7 @@ token for a downstream API (SharePoint), preserving the user's identity (`sub`/`
 ## Token Flow Overview
 
 ```
-1. User signs in → token with scope: api://<APIM_CLIENT_ID>/access_as_user
+1. User signs in → token with scope: api://<APIM_OBO_MIDDLETIER_CLIENT_ID>/access_as_user
                    (audience = APIM's app registration)
 
 2. AI Foundry agent calls APIM with that user token in
@@ -39,8 +39,8 @@ token for a downstream API (SharePoint), preserving the user's identity (`sub`/`
 4. APIM performs OBO exchange against AAD:
       POST https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token
       grant_type            = urn:ietf:params:oauth:grant-type:jwt-bearer
-      client_id             = <APIM_CLIENT_ID>
-      client_secret         = <APIM_CLIENT_SECRET>
+      client_id             = <APIM_OBO_MIDDLETIER_CLIENT_ID>
+      client_secret         = <APIM_OBO_MIDDLETIER_CLIENT_SECRET>
       assertion             = <user's token>
       scope                 = https://<tenant>.sharepoint.com/.default
       requested_token_use   = on_behalf_of
@@ -63,12 +63,12 @@ In **Entra ID → App registrations → New registration**:
 After creation:
 
 1. **Expose an API**
-   - Application ID URI: `api://<APIM_CLIENT_ID>`
+   - Application ID URI: `api://<APIM_OBO_MIDDLETIER_CLIENT_ID>`
    - Add a scope: `access_as_user`
      - Admins and users can consent
      - Display name: "Access SharePoint on behalf of user"
-2. **Certificates & secrets** → New client secret → save as `APIM_CLIENT_SECRET`
-3. Note the **Application (client) ID** → `APIM_CLIENT_ID`
+2. **Certificates & secrets** → New client secret → save as `APIM_OBO_MIDDLETIER_CLIENT_SECRET`
+3. Note the **Application (client) ID** → `APIM_OBO_MIDDLETIER_CLIENT_ID`
 4. Note the **Tenant ID** → `TENANT_ID`
 5. **API permissions** → Add a permission:
    - **SharePoint** → Delegated → `Sites.Read.All` (or `AllSites.Read`, etc.)
@@ -88,8 +88,8 @@ In your AI Foundry agent's tool/action definition for this API:
 
 - Auth type: **OAuth 2.0 (On-Behalf-Of / delegated user)**
 - Authority: `https://login.microsoftonline.com/<TENANT_ID>`
-- Scope: `api://<APIM_CLIENT_ID>/access_as_user`
-- Client ID: `<APIM_CLIENT_ID>`
+- Scope: `api://<APIM_OBO_MIDDLETIER_CLIENT_ID>/access_as_user`
+- Client ID: `<APIM_OBO_MIDDLETIER_CLIENT_ID>`
 
 On first use, Foundry prompts the user to sign in & consent. The resulting
 token is attached as `Authorization: Bearer …` when calling APIM.
@@ -103,8 +103,8 @@ In **APIM → Named values**, create:
 | Name | Value | Notes |
 |---|---|---|
 | `tenant-id` | your tenant GUID | |
-| `apim-client-id` | from Step 1 | |
-| `apim-client-secret` | from Step 1 | Mark as **secret**; ideally Key Vault-backed |
+| `apim-obo-middletier-client-id` | from Step 1 | |
+| `apim-obo-middletier-client-secret` | from Step 1 | Mark as **secret**; ideally Key Vault-backed |
 | `sharepoint-tenant` | e.g. `mngenvmcap272547` | The SharePoint tenant prefix |
 
 ---
@@ -128,7 +128,7 @@ Apply this on the `sharepoint` API (or specific operation). It:
         <validate-jwt header-name="Authorization" failed-validation-httpcode="401" require-scheme="Bearer">
             <openid-config url="https://login.microsoftonline.com/{{tenant-id}}/v2.0/.well-known/openid-configuration" />
             <audiences>
-                <audience>api://{{apim-client-id}}</audience>
+                <audience>api://{{apim-obo-middletier-client-id}}</audience>
             </audiences>
             <required-claims>
                 <claim name="scp" match="any">
@@ -159,8 +159,8 @@ Apply this on the `sharepoint` API (or specific operation). It:
                     <set-body>@{
                         return
                             "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" +
-                            "&client_id={{apim-client-id}}" +
-                            "&client_secret={{apim-client-secret}}" +
+                            "&client_id={{apim-obo-middletier-client-id}}" +
+                            "&client_secret={{apim-obo-middletier-client-secret}}" +
                             "&assertion=" + System.Net.WebUtility.UrlEncode((string)context.Variables["userToken"]) +
                             "&scope=" + System.Net.WebUtility.UrlEncode("https://{{sharepoint-tenant}}.sharepoint.com/.default") +
                             "&requested_token_use=on_behalf_of";
@@ -206,10 +206,10 @@ Apply this on the `sharepoint` API (or specific operation). It:
 
 1. **Get a user token manually** for development:
    - Use [MSAL.js test page](https://jwt.ms), or
-   - `az account get-access-token --resource api://<APIM_CLIENT_ID>`
+   - `az account get-access-token --resource api://<APIM_OBO_MIDDLETIER_CLIENT_ID>`
      (only works if Azure CLI's app is pre-authorized on your scope)
 2. Decode the token at <https://jwt.ms>. Confirm:
-   - `aud` = `api://<APIM_CLIENT_ID>`
+   - `aud` = `api://<APIM_OBO_MIDDLETIER_CLIENT_ID>`
    - `scp` contains `access_as_user`
    - `oid` is present
 3. Call the APIM endpoint:

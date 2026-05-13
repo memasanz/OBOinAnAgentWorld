@@ -27,7 +27,7 @@ audience = Graph, while preserving the user's identity (`sub`/`oid`).
 ## Token Flow Overview
 
 ```
-1. User signs in → token with scope: api://<APIM_CLIENT_ID>/access_as_user
+1. User signs in → token with scope: api://<APIM_OBO_MIDDLETIER_CLIENT_ID>/access_as_user
                    (audience = APIM's app registration)
 
 2. AI Foundry agent calls APIM with that user token in
@@ -38,8 +38,8 @@ audience = Graph, while preserving the user's identity (`sub`/`oid`).
 4. APIM performs OBO exchange against AAD:
       POST https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token
       grant_type            = urn:ietf:params:oauth:grant-type:jwt-bearer
-      client_id             = <APIM_CLIENT_ID>
-      client_secret         = <APIM_CLIENT_SECRET>
+      client_id             = <APIM_OBO_MIDDLETIER_CLIENT_ID>
+      client_secret         = <APIM_OBO_MIDDLETIER_CLIENT_SECRET>
       assertion             = <user's token>
       scope                 = https://graph.microsoft.com/.default
       requested_token_use   = on_behalf_of
@@ -67,7 +67,7 @@ In **Entra ID → App registrations → `apim-obo-middletier`**:
    - Click **Grant admin consent**
 2. Confirm the app still has:
    - **Expose an API** → scope `access_as_user` (audience for the user token)
-   - A valid **client secret** → `APIM_CLIENT_SECRET`
+   - A valid **client secret** → `APIM_OBO_MIDDLETIER_CLIENT_SECRET`
    - `"accessTokenAcceptedVersion": 2` in the manifest
 
 > ⚠️ **`.default` returns all consented scopes.** The OBO token will carry
@@ -81,7 +81,7 @@ In **Entra ID → App registrations → `apim-obo-middletier`**:
 No change from the SharePoint scenario. The user still signs in with scope:
 
 ```
-api://<APIM_CLIENT_ID>/access_as_user
+api://<APIM_OBO_MIDDLETIER_CLIENT_ID>/access_as_user
 ```
 
 The same user token works for both APIM APIs (SharePoint and Graph), because
@@ -97,8 +97,8 @@ Reuse the existing named values; add one for the Graph base URL if you like:
 | Name | Value | Notes |
 |---|---|---|
 | `tenant-id` | your tenant GUID | Already exists |
-| `apim-client-id` | from app registration | Already exists |
-| `apim-client-secret` | from app registration | Key Vault-backed |
+| `apim-obo-middletier-client-id` | from app registration | Already exists |
+| `apim-obo-middletier-client-secret` | from app registration | Key Vault-backed |
 | `graph-base-url` | `https://graph.microsoft.com/v1.0` | New (optional) |
 
 ---
@@ -117,7 +117,7 @@ policy are the **OBO scope** and the **backend base URL**.
         <validate-jwt header-name="Authorization" failed-validation-httpcode="401" require-scheme="Bearer">
             <openid-config url="https://login.microsoftonline.com/{{tenant-id}}/v2.0/.well-known/openid-configuration" />
             <audiences>
-                <audience>api://{{apim-client-id}}</audience>
+                <audience>api://{{apim-obo-middletier-client-id}}</audience>
             </audiences>
             <required-claims>
                 <claim name="scp" match="any">
@@ -148,8 +148,8 @@ policy are the **OBO scope** and the **backend base URL**.
                     <set-body>@{
                         return
                             "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" +
-                            "&client_id={{apim-client-id}}" +
-                            "&client_secret={{apim-client-secret}}" +
+                            "&client_id={{apim-obo-middletier-client-id}}" +
+                            "&client_secret={{apim-obo-middletier-client-secret}}" +
                             "&assertion=" + System.Net.WebUtility.UrlEncode((string)context.Variables["userToken"]) +
                             "&scope=" + System.Net.WebUtility.UrlEncode("https://graph.microsoft.com/.default") +
                             "&requested_token_use=on_behalf_of";
@@ -205,7 +205,7 @@ policy are the **OBO scope** and the **backend base URL**.
 
 ## Step 5 — Test End-to-End
 
-1. Get a user token for `api://<APIM_CLIENT_ID>/access_as_user`.
+1. Get a user token for `api://<APIM_OBO_MIDDLETIER_CLIENT_ID>/access_as_user`.
 2. Decode at <https://jwt.ms> — confirm `aud`, `scp`, and `oid`.
 3. Call the APIM endpoint:
    ```http

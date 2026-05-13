@@ -25,7 +25,7 @@ User → AI Foundry Agent → APIM (validate JWT + OBO exchange) → Downstream 
 What's the same in both:
 
 - **One APIM app registration** (`apim-obo-middletier`) acts as:
-  - The audience for the user's token (`api://<APIM_CLIENT_ID>/access_as_user`)
+  - The audience for the user's token (`api://<APIM_OBO_MIDDLETIER_CLIENT_ID>/access_as_user`)
   - The identity that performs the OBO exchange (using its client secret)
 - **AI Foundry** acquires the user token using the APIM app's scope and
   attaches it as `Authorization: Bearer <user-token>` when calling APIM.
@@ -60,7 +60,7 @@ What's the same in both:
 
 - App registration design (single middle-tier app, optional separate client
   app with `knownClientApplications`)
-- `validate-jwt` audience = `api://<APIM_CLIENT_ID>`
+- `validate-jwt` audience = `api://<APIM_OBO_MIDDLETIER_CLIENT_ID>`
 - Required `scp` claim = `access_as_user`
 - AAD token endpoint + OBO request shape
 - Per-user caching strategy and TTL (~50 min, under the typical 60-min token
@@ -94,7 +94,7 @@ differ only in:
 
 | Pitfall | Applies to | Fix |
 |---|---|---|
-| User token audience targets the downstream API directly | Both | Token must be issued for `api://<APIM_CLIENT_ID>` |
+| User token audience targets the downstream API directly | Both | Token must be issued for `api://<APIM_OBO_MIDDLETIER_CLIENT_ID>` |
 | OBO scope missing `.default` | Both | Use `<resource>/.default` for v2 endpoint |
 | No admin consent on the downstream permission | Both | Grant admin consent on APIM app |
 | Cache key collisions across downstream APIs | Both | Use distinct prefixes per downstream resource |
