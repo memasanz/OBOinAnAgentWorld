@@ -18,11 +18,15 @@ inviting them as B2B guests in your tenant.
 The single-tenant docs assume one Entra tenant owns everything: the middle-tier
 app, the Foundry project, and the users. In the external-access model:
 
-- **Your tenant** owns: `apim-obo-middletier`, APIM, the downstream API integration
-- **Each partner tenant** owns: their own Foundry project, their own
-  `foundry-mcp-client` app registration, their own users
-- **Tokens crossing the boundary:** only USER tokens (issued by the partner
-  tenant) hitting your APIM
+- **Your tenant (Tenant A)** owns: `apim-obo-middletier`, APIM, the downstream
+  API integration, the multi-tenant web app (`agent-host-webapp`), the
+  `foundry-mcp-client` app registration, **and a dedicated Foundry project per
+  partner** that you manage on the partner's behalf.
+- **Each partner tenant (Tenant B, C, …)** owns only its own users. No Azure
+  resources, no app registrations, no Foundry project on the partner side.
+- **Tokens crossing the boundary:** USER tokens issued by the partner tenant
+  (for the multi-tenant web app and for the MCP client) flowing into resources
+  hosted in Tenant A.
 
 This changes the app-registration audience, the `validate-jwt` policy, and the
 authorization model. Everything else (OBO mechanics, Graph/SP permissions,
@@ -37,21 +41,47 @@ caching) is identical to the single-tenant doc.
 All requirements from `obo-foundry-apim-graph.md` (or `-sharepoint.md`) still
 apply. This document adds requirements **on top**.
 
+### Hosting model
+
+The partner does **not** stand up their own Azure resources. The pattern is:
+
+- **Your tenant (Tenant A)** hosts a **dedicated Foundry project per partner**
+  (one project per partner, so agents, prompts, tools, and data are isolated).
+  You manage the project on the partner's behalf — agent configuration, MCP
+  tool wiring, deployments, observability are all done by your team.
+- **The partner's end users (in Tenant B)** never touch the Azure portal or
+  Foundry Studio. They reach the agent through a **multi-tenant web app**
+  hosted in Tenant A that signs them in against *their own* tenant.
+- **Partner admins / agent builders have no direct access** to the Foundry
+  project. This is what keeps the design fully compatible with the
+  no-B2B-guests rule (Azure RBAC on the Foundry resource would require a
+  cross-tenant principal in your tenant, which we are not creating).
+
+If a partner needs to self-serve agent development, this design does not fit —
+that scenario requires either guest accounts, B2B direct connect, or putting
+the Foundry project in the partner's own tenant. None of those are documented
+here.
+
 ### External-access requirements
 
 | # | Requirement | Owner |
 |---|---|---|
-| 1 | `apim-obo-middletier` must be multi-tenant (`signInAudience = AzureADMultipleOrgs`) | You |
-| 2 | Delegated Graph (or SharePoint) permissions on the middle-tier app must be admin-consented in your tenant | You |
-| 3 | **One-time admin consent in each partner tenant** for `apim-obo-middletier` | Partner admin |
-| 4 | APIM `validate-jwt` policy enforces an explicit issuer allowlist (one entry per accepted partner tenant) | You |
-| 5 | Per-user authorization is enforced on your side using `tid` + `oid` claims (tenant allowlist and/or oid allowlist) | You |
-| 6 | Each partner tenant runs its own Foundry project and its own `foundry-mcp-client` app registration | Partner |
+| 1 | A **dedicated Foundry project per partner** is provisioned in your tenant (Tenant A) and managed by you on the partner's behalf | You |
+| 2 | Partner end users access the agent via a **multi-tenant web app** in Tenant A, never via the Azure portal or Foundry Studio | You |
+| 3 | Partner admins and agent builders have **no direct Foundry/Azure access** in your tenant | You + Partner agreement |
+| 4 | `apim-obo-middletier` must be multi-tenant (`signInAudience = AzureADMultipleOrgs`) | You |
+| 5 | The web app's app registration (`agent-host-webapp`) must be multi-tenant | You |
+| 6 | The Foundry MCP client app registration (`foundry-mcp-client`) must be multi-tenant | You |
+| 7 | Delegated Graph (or SharePoint) permissions on the middle-tier app must be admin-consented in your tenant | You |
+| 8 | **One-time admin consent in each partner tenant** for `agent-host-webapp` and `foundry-mcp-client` (consenting to `foundry-mcp-client` cascades a service principal for `apim-obo-middletier` into the partner tenant) | Partner admin |
+| 9 | APIM `validate-jwt` policy enforces an explicit issuer allowlist (one entry per accepted partner tenant) | You |
+| 10 | Per-user authorization is enforced on your side using `tid` + `oid` claims (tenant allowlist and/or oid allowlist) | You |
 
-> **Requirement 3 is non-negotiable in Entra.** There is no OAuth flow that
+> **Requirement 8 is non-negotiable in Entra.** There is no OAuth flow that
 > issues a user token for an app in tenant B without an admin in tenant B
 > consenting at least once. Microsoft Graph itself works the same way. After
-> the one-time consent, the partner admin has no further required tasks.
+> the one-time consent (two clicks — one per app), the partner admin has no
+> further required tasks.
 
 ### Out of scope by design
 
