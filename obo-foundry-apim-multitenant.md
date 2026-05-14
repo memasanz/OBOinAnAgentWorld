@@ -22,24 +22,21 @@ It is the simpler sibling of the OBO docs:
 
 ## Why a separate document?
 
-The OBO docs assume the agent acts *as the user* against the user's own M365
-data. That requires the OBO middle-tier flow, Graph delegated permissions, and
-an `apim-obo-middletier` app reg with a client credential.
+This doc covers a specific scenario: **users in another Entra tenant calling
+an agent that only touches your tenant's resources** (no Microsoft Graph, no
+SharePoint, no partner-tenant directory). It's split out from the OBO docs
+because the auth model is fundamentally different — and simpler.
 
-This pattern is different:
+| | OBO docs (`obo-foundry-apim-graph` / `-sharepoint`) | This doc |
+|---|---|---|
+| Who the user is | Same tenant as the agent | **Different tenant** from the agent |
+| What the agent reads | The user's own M365 data (mail, files, sites) | **Your** Tenant A resources only |
+| Auth pattern | OBO token exchange via `apim-obo-middletier` | Validated USER token + per-agent **managed identity** |
+| App regs | 3 (web app, middle-tier, Graph permissions) | **1** (`agent-host-webapp`) |
+| Cross-partner isolation | n/a (single tenant) | **Azure RBAC** on per-partner data slices |
+| User's identity used for | Acting as the user against Graph | Tagging/filtering rows in your data |
 
-- The agent **does not** read the user's mail, calendar, OneDrive, or
-  partner-tenant directory.
-- The agent **does** read/write *your* Tenant A resources: AI Search indexes,
-  Cosmos containers, blob storage, internal APIs, knowledge bases, etc.
-- **Each partner has their own dedicated slice** of those resources, and the
-  per-partner Foundry project's managed identity is granted RBAC on **only**
-  that slice.
-- The user's identity (`tid` + `oid` from the validated USER token) is used
-  for **per-user separation within a partner's slice** (conversation tagging,
-  per-user reads, audit) — never for direct backend authentication.
-
-Because of that, the entire OBO middle tier disappears. No token exchange,
+Because OBO disappears entirely, so does the middle tier: no token exchange,
 no `send-request` to AAD, no Graph permissions, no MCP-OAuth client app reg.
 
 ---
