@@ -97,44 +97,67 @@ here.
 ## Architecture
 
 ```
-┌─────────────────────────────┐         ┌─────────────────────────────┐
-│   Partner tenant (B)        │         │   Your tenant (A)           │
-│                             │         │                             │
-│   ┌───────────────────┐     │         │   ┌─────────────────────┐   │
-│   │ Foundry project   │     │         │   │ apim-obo-middletier │   │
-│   │ (their Azure sub) │     │         │   │ (multi-tenant)      │   │
-│   └────────┬──────────┘     │         │   └──────────┬──────────┘   │
-│            │                │         │              │              │
-│   ┌────────▼──────────┐     │         │   ┌──────────▼──────────┐   │
-│   │ foundry-mcp-client│     │         │   │ APIM                │   │
-│   │ (their app reg)   │     │  USER   │   │ (validate-jwt +     │   │
-│   └────────┬──────────┘     │  token  │   │  OBO send-request)  │   │
-│            │                │ ──────► │   └──────────┬──────────┘   │
-│            │ user signs in  │         │              │              │
-│            │ → user token   │         │              │ Graph token  │
-│            │   for          │         │              │ (OBO result) │
-│            │   middle-tier  │         │              ▼              │
-│            ▼                │         │   Microsoft Graph /         │
-│   Entra (tenant B issues    │         │   SharePoint REST           │
-│   tokens; SP for            │         │                             │
-│   middletier exists here    │         │                             │
-│   after one-time consent)   │         │                             │
-└─────────────────────────────┘         └─────────────────────────────┘
+┌─────────────────────────┐                  ┌──────────────────────────────────────────┐
+│   Partner tenant (B)    │                  │   Your tenant (A) — hosts everything     │
+│                         │                  │                                          │
+│   ┌────────────────┐    │  1. user sign-in │   ┌────────────────────────────────┐     │
+│   │ Partner end    │    │  (multi-tenant   │   │ agent-host-webapp              │     │
+│   │ user (browser) │────┼──auth-code)──────┼──►│ (multi-tenant web app, App     │     │
+│   └────────────────┘    │                  │   │  Service / Container Apps)     │     │
+│                         │                  │   └──────────────┬─────────────────┘     │
+│   ┌────────────────┐    │                  │                  │ session cookie        │
+│   │ Entra (B)      │    │                  │                  │ (oid/upn from B)      │
+│   │ - issues USER  │    │                  │                  ▼                       │
+│   │   tokens for   │    │                  │   ┌────────────────────────────────┐     │
+│   │   apps in (A)  │    │                  │   │ Foundry project (per partner)  │     │
+│   │ - SPs created  │    │                  │   │ - dedicated agent              │     │
+│   │   on consent:  │    │                  │   │ - MCP tool: OAuth Identity     │     │
+│   │   • agent-host │    │                  │   │   Passthrough                  │     │
+│   │   • foundry-   │    │  2. MCP tool     │   └──────────────┬─────────────────┘     │
+│   │     mcp-client │◄───┼──auth-code via───┤                  │                       │
+│   │   • apim-obo-  │    │  APIM Cred Mgr   │   ┌──────────────▼─────────────────┐     │
+│   │     middletier │    │  (foundry-mcp-   │   │ APIM Credential Manager        │     │
+│   │     (cascaded) │    │   client)        │   │ (brokers auth-code, caches     │     │
+│   └────────────────┘    │                  │   │  USER token per user)          │     │
+│                         │  3. USER token   │   └──────────────┬─────────────────┘     │
+│                         │  (aud=middletier,│                  │ Bearer USER token     │
+│                         │   tid=B, oid=B)  │                  ▼                       │
+│                         │ ────────────────►│   ┌────────────────────────────────┐     │
+│                         │                  │   │ APIM API                       │     │
+│                         │                  │   │ - validate-jwt (issuer in B)   │     │
+│                         │                  │   │ - OBO send-request to AAD as   │     │
+│                         │                  │   │   apim-obo-middletier          │     │
+│                         │                  │   └──────────────┬─────────────────┘     │
+│                         │                  │                  │ Graph token (for B    │
+│                         │                  │                  │ user; aud=Graph)      │
+│                         │                  │                  ▼                       │
+│                         │                  │   Microsoft Graph / SharePoint REST      │
+│                         │                  │   → returns PARTNER-TENANT data          │
+└─────────────────────────┘                  └──────────────────────────────────────────┘
 ```
 
 Key observations:
 
-- The partner's user signs into the partner's Foundry → APIM Credential Manager
-  brokers an auth-code flow against **the partner tenant's Entra**.
-- The partner tenant issues a USER token with `aud = api://<your-middletier>`,
-  `iss = https://login.microsoftonline.com/<partnerTenantId>/v2.0`,
-  `tid = <partnerTenantId>`.
-- That token is sent to **your** APIM.
-- Your middle-tier app uses its own credential to perform the OBO exchange. AAD
-  honors the request because the middle-tier SP exists in the partner tenant
-  (consented in step 3 above).
-- The resulting Graph token is for the **partner-tenant** user → Graph returns
-  **partner-tenant** data. Your tenant's data is never exposed.
+- **All Azure resources and all three app registrations live in Tenant A.**
+  Tenant B contributes only its users.
+- **Three multi-tenant app registrations** are involved, all owned by you:
+  - `agent-host-webapp` — the web app the user signs into (phase 1)
+  - `foundry-mcp-client` — the OAuth client the MCP tool uses (phase 2)
+  - `apim-obo-middletier` — the OBO middle tier (audience of the USER token)
+- **The partner admin's only required action** is one-time admin consent in
+  Tenant B for `agent-host-webapp` and `foundry-mcp-client`. Consenting to
+  `foundry-mcp-client` cascades a service principal for `apim-obo-middletier`
+  into Tenant B because `foundry-mcp-client` declares a delegated permission on
+  it. After that, no further partner-side action is required.
+- **USER tokens carry partner-tenant identity**: `iss = https://login.microsoftonline.com/<tenantB>/v2.0`,
+  `tid = <tenantB>`, `oid = <user oid in tenant B>`. APIM enforces a tenant
+  allowlist via `<issuers>` in `validate-jwt`.
+- **OBO returns partner-tenant Graph data.** The middle-tier app exchanges the
+  USER token for a Graph token whose subject is the partner-tenant user, so
+  Graph returns *their* tenant's data — never yours.
+- **Partner end users never sign into the Azure portal or Foundry Studio.**
+  Their entire experience is the multi-tenant web app. Foundry project
+  management is performed by you, signed in with your own Tenant A credentials.
 
 ---
 
