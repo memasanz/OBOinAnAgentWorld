@@ -7,7 +7,7 @@ signed-in user. APIM is the middle tier that performs the OBO token exchange
 
 **Example endpoint (Graph equivalent of the SharePoint site lookup):**
 ```
-GET https://mmz-apim-std.azure-api.net/graph/v1.0/sites/mngenvmcap272547.sharepoint.com:/sites/dataforfishing
+GET https://mmz-apim-std.azure-api.net/graph/sites/mngenvmcap272547.sharepoint.com:/sites/dataforfishing
 ```
 
 ---
@@ -205,6 +205,9 @@ SharePoint policy are the **OBO scope** and the **backend base URL**.
         <validate-jwt header-name="Authorization" failed-validation-httpcode="401" require-scheme="Bearer">
             <openid-config url="https://login.microsoftonline.com/{{tenant-id}}/v2.0/.well-known/openid-configuration" />
             <audiences>
+                <!-- v2 tokens (accessTokenAcceptedVersion = 2): aud is the bare client-id GUID -->
+                <audience>{{apim-obo-middletier-client-id}}</audience>
+                <!-- v1 tokens: aud is the Application ID URI -->
                 <audience>api://{{apim-obo-middletier-client-id}}</audience>
             </audiences>
             <required-claims>
@@ -289,6 +292,13 @@ SharePoint policy are the **OBO scope** and the **backend base URL**.
 > 🔑 Use a **Graph-specific cache key** (`obo-graph-<oid>`) so it doesn't
 > collide with the SharePoint OBO token cached under `obo-sp-<oid>`.
 
+> 🎫 **Why two audiences?** With `accessTokenAcceptedVersion = 2` in the app
+> manifest, AAD issues v2 tokens whose `aud` claim is the **bare client-id
+> GUID** (e.g. `af979b79-...`). Older v1 tokens use the Application ID URI
+> form (`api://af979b79-...`). Listing both makes the policy work regardless
+> of which token version a client requests, which avoids `Invalid JWT` errors
+> when switching tools (Azure CLI, MSAL, AI Foundry).
+
 ---
 
 ## Step 6 — Test End-to-End
@@ -298,11 +308,37 @@ SharePoint policy are the **OBO scope** and the **backend base URL**.
 2. Decode at <https://jwt.ms> — confirm `aud`, `scp`, and `oid`.
 3. Call the APIM endpoint:
    ```http
-   GET https://mmz-apim-std.azure-api.net/graph/v1.0/me
+   GET https://mmz-apim-std.azure-api.net/graph/me
    Authorization: Bearer <user-token>
+   Ocp-Apim-Subscription-Key: <apim-subscription-key>
    ```
+   > The path is `/graph/me`, not `/graph/v1.0/me`. The `v1.0` is already part
+   > of the backend URL configured on the API (`https://graph.microsoft.com/v1.0`),
+   > so APIM appends only what comes after the `/graph` suffix.
+
+   > 🔑 The `Ocp-Apim-Subscription-Key` header is required if the API has
+   > **Subscription required** enabled (the default). Get a key from
+   > **APIM portal → Subscriptions → Show/hide keys**, or disable the
+   > requirement — see [Disabling subscription requirement](#disabling-subscription-requirement-optional)
+   > below.
 4. APIM **Test console → Enable tracing** to inspect the OBO exchange and the
    downstream Graph call.
+
+### Disabling subscription requirement (optional)
+
+For early testing — when an AI Foundry agent will authenticate solely with the
+user's bearer token and you don't want to also juggle a subscription key — you
+can turn off the subscription gate on this API:
+
+**APIM portal → APIs → `Microsoft Graph (OBO)` → Settings tab → uncheck
+**Subscription required** → Save.**
+
+| Subscription required | When to use |
+|---|---|
+| ✅ On | Production. Lets you meter, throttle, and revoke per-consumer. |
+| ❌ Off | Dev/test, or when the bearer token *is* your auth/identity gate (e.g., the validate-jwt policy already proves it's a known user). |
+
+Even with subscription off, the `validate-jwt` policy still rejects unauthenticated callers, so the API isn't open.
 
 ### Testing with the Azure CLI
 
@@ -338,6 +374,9 @@ $token = az account get-access-token `
   --resource "api://<APIM_OBO_MIDDLETIER_CLIENT_ID>" `
   --query accessToken -o tsv
 
+# Subscription key from APIM portal → Subscriptions → Show/hide keys
+$subKey = "<paste-primary-key>"
+
 # Sanity check at https://jwt.ms — verify:
 #   aud = api://<APIM_OBO_MIDDLETIER_CLIENT_ID>
 #   scp contains access_as_user
@@ -345,7 +384,8 @@ $token = az account get-access-token `
 $token
 
 curl.exe -H "Authorization: Bearer $token" `
-  "https://mmz-apim-std.azure-api.net/graph/v1.0/me"
+        -H "Ocp-Apim-Subscription-Key: $subKey" `
+        "https://mmz-apim-std.azure-api.net/graph/me"
 ```
 
 If you skip the authorized-client-application step, `az account get-access-token`
