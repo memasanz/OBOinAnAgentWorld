@@ -1,30 +1,82 @@
-# OBO Flows: AI Foundry → APIM → Downstream API
+# Auth Patterns: AI Foundry → APIM → Downstream Resources
 
-This repo documents **On-Behalf-Of (OBO)** auth patterns for letting an
-AI Foundry agent call user-protected APIs through Azure API Management. APIM
-is the middle tier that performs the OBO token exchange (Option A in our
-design choices).
+This repo documents auth patterns for an **AI Foundry** agent that calls
+APIs and resources through **Azure API Management** (APIM). It covers two
+distinct scenario families:
 
-## Documents
+- **The agent acts as the signed-in user** against Microsoft 365
+  (SharePoint, Graph). This uses the **On-Behalf-Of (OBO)** flow, with APIM
+  as the OBO middle tier.
+- **External users** (in other Entra tenants, or with no Entra at all) call
+  the agent, but the agent only touches **your** tenant's resources. This
+  uses **per-agent managed identities** plus a validated user identity for
+  per-user separation. **No OBO involved.**
 
-| Scenario | File |
-|---|---|
-| OBO to **SharePoint REST** | [`obo-foundry-apim-sharepoint.md`](./obo-foundry-apim-sharepoint.md) |
-| OBO to **Microsoft Graph** | [`obo-foundry-apim-graph.md`](./obo-foundry-apim-graph.md) |
-| **Multi-tenant external access** — Option A: multi-tenant Entra app reg | [`obo-foundry-apim-multitenant.md`](./obo-foundry-apim-multitenant.md) |
-| **Multi-tenant external access** — Option B: Entra External ID (CIAM) | [`multitenant-external-id.md`](./multitenant-external-id.md) |
+Pick a scenario from the table below; each doc is self-contained.
 
 ---
 
-## The Common Pattern
+## Documents
 
-Both scenarios use the **identical** OBO shape:
+| Family | Scenario | When to use | File |
+|---|---|---|---|
+| **OBO** (agent acts as user) | OBO to **SharePoint REST** | Agent reads SharePoint sites/lists/libraries on behalf of the signed-in user | [`obo-foundry-apim-sharepoint.md`](./obo-foundry-apim-sharepoint.md) |
+| **OBO** (agent acts as user) | OBO to **Microsoft Graph** | Agent reads cross-M365 data (Files, Mail, Calendar, Teams, Users) on behalf of the user | [`obo-foundry-apim-graph.md`](./obo-foundry-apim-graph.md) |
+| **Multi-tenant external** | Option A — **Multi-tenant Entra app reg** | Few external partners, all on Entra, you can reach their admin once for consent | [`obo-foundry-apim-multitenant.md`](./obo-foundry-apim-multitenant.md) |
+| **Multi-tenant external** | Option B — **Entra External ID (CIAM)** | Many partners, partners not on Entra, or you need self-service signup | [`multitenant-external-id.md`](./multitenant-external-id.md) |
+
+---
+
+## Decision quick-reference
+
+- Agent needs to read a SharePoint **site/list/library** as the user?
+  → **OBO to SharePoint REST**
+- Agent needs cross-M365 data (Files, Mail, Calendar, Teams, Users) as the user?
+  → **OBO to Microsoft Graph**
+- Agent needs both? → One APIM app, two APIM APIs, two policies (same shape)
+- External users from other companies, only touching **your tenant's**
+  resources, **few partners on Entra**? → **Multi-tenant Option A**
+- External users, **many partners or non-Entra users**, want self-service
+  signup? → **Multi-tenant Option B (External ID)**
+- Mix of both? → APIM can accept either issuer; see Option B doc's
+  side-by-side section.
+
+---
+
+## Two scenario families at a glance
+
+The two families look similar (both are "user → Foundry agent → APIM →
+something") but they answer different questions and use different auth
+machinery. Reading the comparison below first will save confusion when you
+dive into the individual docs.
+
+| | **OBO family** (SharePoint, Graph) | **Multi-tenant external family** (Options A / B) |
+|---|---|---|
+| Who is the user? | Signed-in user **in your tenant** | User in a **different** tenant (or your External ID tenant) |
+| What does the agent read? | The user's own M365 data | **Your** Tenant A resources (Cosmos, Search, internal APIs, …) |
+| Who acts on the downstream call? | The user — APIM swaps the user token for a downstream token via OBO | A **managed identity** (APIM's MI or the per-agent Foundry MI) |
+| What is the user identity used for? | Authorization at the downstream API | **Tagging / filtering rows** in your data — never for direct backend auth |
+| App regs in your tenant | `apim-obo-middletier`, `foundry-mcp-client`, `agent-host-webapp` | `agent-host-webapp` only (multi-tenant or External ID) |
+| Cross-tenant? | No — single tenant | Yes — by design |
+| Microsoft "Agent OBO" pattern applies? | Yes (see [Appendix](#appendix-microsoft-entra-agent-id-oauth-background)) | No |
+
+The rest of this document is split into two parts that mirror these
+families. Skip to whichever applies.
+
+---
+
+# Part 1 — OBO patterns (single-tenant; agent acts as the user)
+
+This part covers the SharePoint REST and Microsoft Graph docs. Both use the
+**identical** OBO shape; they differ only in the downstream resource.
+
+## The common OBO pattern
 
 ```
 User → AI Foundry Agent → APIM (validate JWT + OBO exchange) → Downstream API
 ```
 
-What's the same in both:
+What's the same in both OBO scenarios:
 
 - **One APIM app registration** (`apim-obo-middletier`) acts as:
   - The audience for the user's token (`api://<APIM_OBO_MIDDLETIER_CLIENT_ID>/access_as_user`)
@@ -41,9 +93,7 @@ What's the same in both:
   5. Replace the `Authorization` header with the new token
   6. `set-backend-service` to the downstream API
 
----
-
-## What Changes Between Scenarios
+## What changes between OBO scenarios
 
 | Concern | SharePoint REST | Microsoft Graph |
 |---|---|---|
@@ -56,9 +106,7 @@ What's the same in both:
 | **Conditional Access exposure** | Lower (SP REST often less restricted) | Higher (Graph commonly under MFA / compliant device CA) |
 | **Permission granularity** | Fewer, broader scopes | Many fine-grained scopes |
 
----
-
-## What Stays the Same
+## What stays the same
 
 - App registration design (single middle-tier app, optional separate client
   app with `knownClientApplications`)
@@ -73,9 +121,7 @@ What's the same in both:
 - AI Foundry agent configuration (the user token works for *both* APIs because
   the OBO exchange happens server-side with a different `scope` each time)
 
----
-
-## Can One APIM App Serve Both?
+## Can one APIM app serve both OBO scenarios?
 
 Yes — and it's the recommended approach. On `apim-obo-middletier`:
 
@@ -91,9 +137,7 @@ differ only in:
 - The cache key prefix
 - The backend base URL
 
----
-
-## Cross-Cutting Pitfalls
+## OBO pitfalls
 
 | Pitfall | Applies to | Fix |
 |---|---|---|
@@ -107,13 +151,15 @@ differ only in:
 
 ---
 
-## Multi-Tenant External Access: Two Approaches
+# Part 2 — Multi-tenant external access (cross-tenant; no OBO)
 
 When external (non-employee) users need to call your agent and you've ruled
 out B2B guests, there are two valid identity models. Both keep external
 users out of your workforce tenant; both end at the same per-agent-MI
 backend pattern. They differ only in **where the user signs in** and
 **whether the partner admin has to do anything**.
+
+## Two approaches at a glance
 
 | | **Option A — Multi-tenant Entra app reg** [`obo-foundry-apim-multitenant.md`](./obo-foundry-apim-multitenant.md) | **Option B — Entra External ID (CIAM)** [`multitenant-external-id.md`](./multitenant-external-id.md) |
 |---|---|---|
@@ -125,7 +171,7 @@ backend pattern. They differ only in **where the user signs in** and
 | Works when partner isn't on Entra | ❌ no | ✅ yes |
 | Operational ceiling | ~10–25 partners before chasing consent gets painful | Hundreds+ |
 
-### Pros / cons
+## Pros / cons
 
 **Option A — Multi-tenant Entra app reg**
 
@@ -171,7 +217,7 @@ backend pattern. They differ only in **where the user signs in** and
   claim isn't on by default; it's a manifest + token-config step that's
   easy to forget.
 
-### Picking one
+## Picking one
 
 - **Few partners, all on Entra, you can reach the admins** → **Option A**.
 - **Many partners, mixed identity providers, or you need self-service
@@ -182,17 +228,11 @@ backend pattern. They differ only in **where the user signs in** and
 
 ---
 
-## Decision Quick-Reference
+# Appendix: Microsoft Entra Agent ID OAuth background
 
-- Need to read a SharePoint **site/list/library** with the SP REST surface?
-  → SharePoint REST flow
-- Need cross-Microsoft-365 data (Files, Mail, Calendar, Teams, Users)?
-  → Graph flow
-- Need both? → One APIM app, two APIM APIs, two policies (same shape)
-
----
-
-## Background: Microsoft Entra Agent ID OAuth
+> This appendix is **only relevant to Part 1 (OBO scenarios)**. It maps the
+> implementation in this repo onto Microsoft's published "Agent OBO"
+> vocabulary so you can cross-reference the official docs.
 
 Microsoft has published guidance for how **agents** (AI agents acting on
 behalf of users) should obtain tokens. Two key references:
@@ -202,7 +242,7 @@ behalf of users) should obtain tokens. Two key references:
 | [Authentication protocols in agents](https://learn.microsoft.com/en-us/entra/agent-id/agent-oauth-protocols) | Overview of the three OAuth flows agents support: on-behalf-of, autonomous, and "agent's user account" |
 | [Agent OAuth flows: On behalf of flow](https://learn.microsoft.com/en-us/entra/agent-id/agent-on-behalf-of-oauth-flow) | Step-by-step OBO flow specifically for agents, including the federated identity credential / managed identity pattern |
 
-### How this maps to what's in this repo
+## How this maps to what's in this repo
 
 The Microsoft "Agent OBO" pattern introduces two related identities:
 
@@ -212,7 +252,7 @@ The Microsoft "Agent OBO" pattern introduces two related identities:
 | **Agent identity** | A child identity that performs the actual OBO token exchange on behalf of a specific agent instance. Authenticates to Entra by presenting a token (`T1`) issued to its parent blueprint, plus the user's token (`Tc`). | Not modeled separately today — APIM acts as both the audience for `Tc` *and* the principal performing the OBO exchange, using the middle-tier's secret. |
 | **Client app** (the calling agent) | The OAuth client that signs the user in and obtains `Tc`. | `foundry-mcp-client` (the app reg Foundry's MCP credential provider uses) |
 
-### Key rules from the Microsoft references
+## Key rules from the Microsoft references
 
 - **No `/authorize` for agents.** Agents are confidential clients that
   exchange tokens programmatically. They do not run interactive auth-code
@@ -232,7 +272,7 @@ The Microsoft "Agent OBO" pattern introduces two related identities:
   production, swap APIM's named-value secret for a FIC + UAMI configuration
   (a future enhancement to this repo).
 
-### Auth flow (mermaid)
+## Auth flow (mermaid)
 
 This is the end-to-end shape used in this repo, expressed in Microsoft's
 agent-OBO terminology.
@@ -322,7 +362,7 @@ sequenceDiagram
     Browser-->>User: "Here's your Graph profile..."
 ```
 
-#### Key points about this flow
+### Key points about this flow
 
 - **Three sign-ins are *possible* but you usually only see one.** The web
   app sign-in (phase 1) is real and required. The Foundry-tool sign-in
@@ -347,7 +387,7 @@ sequenceDiagram
   In a more advanced setup with FIC + managed identity these can be split,
   but for an in-tenant APIM deployment a single app reg is fine.
 
-#### How the diagram lines up with the Microsoft "Agent OBO" steps
+### How the diagram lines up with the Microsoft "Agent OBO" steps
 
 | Microsoft step (uses `Tc` / `Tr`) | This repo (plain labels) |
 |---|---|
@@ -356,4 +396,3 @@ sequenceDiagram
 | (3) Blueprint requests `T1` using its credential (secret today; FIC/MI recommended) | Implicit in phase 5: APIM authenticates to AAD using its `client_id` + `client_assertion` |
 | (4) Agent identity sends OBO request with `T1` + `Tc` | Phase 5 — single `send-request` from APIM combines both roles |
 | (5) AAD returns the resource token `Tr` after validating audiences | Phase 5 — Graph token returned to APIM |
-
