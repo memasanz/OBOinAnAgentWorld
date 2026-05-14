@@ -25,6 +25,7 @@ Pick a scenario from the table below; each doc is self-contained.
 | **Multi-tenant external** | Option A — **Multi-tenant Entra app reg** | Few external partners, all on Entra, you can reach their admin once for consent | [`obo-foundry-apim-multitenant.md`](./obo-foundry-apim-multitenant.md) |
 | **Multi-tenant external** | Option B — **Entra External ID (CIAM)** | Many partners, partners not on Entra, or you need self-service signup | [`multitenant-external-id.md`](./multitenant-external-id.md) |
 | **Hybrid** | **External ID front door + OBO for internal users** | Single sign-in for everyone, but the internal Foundry project also needs OBO to call Graph/SharePoint as the user | [`external-id-with-internal-obo.md`](./external-id-with-internal-obo.md) |
+| **Discovery** | **Questions to pick the right multi-tenant flow** | You're scoping a new multi-tenant deployment and not sure whether you need A, B, or H | [`multi-tenant-discovery-questions.md`](./multi-tenant-discovery-questions.md) |
 
 ---
 
@@ -41,6 +42,8 @@ Pick a scenario from the table below; each doc is self-contained.
   signup? → **Multi-tenant Option B (External ID)**
 - Mix of both? → APIM can accept either issuer; see Option B doc's
   side-by-side section.
+- **Not sure which multi-tenant path fits?** → Walk through
+  [`multi-tenant-discovery-questions.md`](./multi-tenant-discovery-questions.md)
 
 ---
 
