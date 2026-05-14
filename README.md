@@ -24,6 +24,7 @@ Pick a scenario from the table below; each doc is self-contained.
 | **OBO** (agent acts as user) | OBO to **Microsoft Graph** | Agent reads cross-M365 data (Files, Mail, Calendar, Teams, Users) on behalf of the user | [`obo-foundry-apim-graph.md`](./obo-foundry-apim-graph.md) |
 | **Multi-tenant external** | Option A — **Multi-tenant Entra app reg** | Few external partners, all on Entra, you can reach their admin once for consent | [`obo-foundry-apim-multitenant.md`](./obo-foundry-apim-multitenant.md) |
 | **Multi-tenant external** | Option B — **Entra External ID (CIAM)** | Many partners, partners not on Entra, or you need self-service signup | [`multitenant-external-id.md`](./multitenant-external-id.md) |
+| **Hybrid** | **External ID front door + OBO for internal users** | Single sign-in for everyone, but the internal Foundry project also needs OBO to call Graph/SharePoint as the user | [`external-id-with-internal-obo.md`](./external-id-with-internal-obo.md) |
 
 ---
 
