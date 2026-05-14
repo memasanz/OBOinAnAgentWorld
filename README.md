@@ -158,48 +158,96 @@ The Microsoft "Agent OBO" pattern introduces two related identities:
 ### Auth flow (mermaid)
 
 This is the end-to-end shape used in this repo, expressed in Microsoft's
-agent-OBO terminology:
+agent-OBO terminology.
+
+> **Token vocabulary used in the diagram:**
+>
+> | Label | What it is | Audience (`aud`) | Issued by |
+> |---|---|---|---|
+> | **User token** | The bearer token Foundry attaches to MCP calls. Identifies the signed-in user. Microsoft's docs call this `Tc` ("client token"). | `apim-obo-middletier` (the APIM middle-tier app) | Entra, via the `foundry-mcp-client` auth-code flow |
+> | **Graph token** | The token APIM gets back from the OBO exchange and forwards to the downstream API. Microsoft's docs call this `Tr` ("resource token"). | `https://graph.microsoft.com` (or SharePoint) | Entra, via the OBO `jwt-bearer` exchange |
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor User
-    participant Client as Client App<br/>(foundry-mcp-client)
+    participant WebApp as Web App<br/>(agent host UI)
     participant Foundry as AI Foundry Agent
+    participant CredMgr as APIM Credential Manager<br/>(global.consent.azure-apim.net)
     participant Entra as Microsoft Entra ID
-    participant APIM as APIM<br/>(apim-obo-middletier ≡ Agent Identity Blueprint)
+    participant APIM as APIM<br/>(apim-obo-middletier)
     participant API as Downstream API<br/>(Graph / SharePoint)
 
-    User->>Client: Sign in (auth-code + PKCE via APIM Credential Manager)
-    Client->>Entra: Authorization request<br/>scope = api://MIDDLETIER/access_as_user
-    Entra-->>Client: User access token Tc<br/>(aud = MIDDLETIER, scp = access_as_user, oid = user)
-    Client->>Foundry: Pass Tc as bearer
-    Foundry->>APIM: GET /graph/me<br/>Authorization: Bearer Tc
+    Note over User,WebApp: 1️⃣ User signs in to the agent host
+    User->>WebApp: Sign in
+    WebApp-->>User: Authenticated session
+    User->>WebApp: "Show me my Graph profile"
+    WebApp->>Foundry: Forward user prompt + identity context
+
+    Note over Foundry,CredMgr: 2️⃣ Agent invokes an MCP tool that needs OAuth Identity Passthrough
+    Foundry->>Foundry: Plan → call apim-get-user-details tool
+    Foundry->>CredMgr: Request user token for tool<br/>(connection = foundry-mcp-client)
+
+    alt No cached user token for this user
+        CredMgr->>Entra: Auth-code + PKCE<br/>client_id = foundry-mcp-client<br/>scope = api://MIDDLETIER/access_as_user offline_access
+        Entra-->>User: Sign-in / consent prompt (first time only)
+        User-->>Entra: Authenticate
+        Entra-->>CredMgr: Authorization code → exchange for tokens
+        CredMgr->>CredMgr: Cache USER token + refresh token
+    end
+
+    CredMgr-->>Foundry: USER token<br/>(aud = MIDDLETIER, scp = access_as_user, oid = user)
+
+    Note over Foundry,APIM: 3️⃣ Foundry calls APIM with the user's bearer token
+    Foundry->>APIM: GET /graph/me<br/>Authorization: Bearer ⟨USER token⟩
     APIM->>APIM: validate-jwt (aud, scp, exp, iss)
     APIM->>APIM: cache-lookup obo-graph-{oid}
+
+    Note over APIM,Entra: 4️⃣ On miss, APIM swaps USER token for a GRAPH token via OBO
     alt cache miss
-        APIM->>Entra: POST /oauth2/v2.0/token<br/>grant_type=jwt-bearer<br/>assertion=Tc<br/>scope=https://graph.microsoft.com/.default<br/>requested_token_use=on_behalf_of<br/>client_id=MIDDLETIER<br/>client_assertion=⟨secret or FIC/MI⟩
-        Entra-->>APIM: Resource token Tr<br/>(aud = Graph, sub/oid = user)
-        APIM->>APIM: cache-store obo-graph-{oid} → Tr
+        APIM->>Entra: POST /oauth2/v2.0/token<br/>grant_type=jwt-bearer<br/>assertion=⟨USER token⟩<br/>scope=https://graph.microsoft.com/.default<br/>requested_token_use=on_behalf_of<br/>client_id=MIDDLETIER<br/>client_assertion=⟨secret or FIC/MI⟩
+        Entra-->>APIM: GRAPH token<br/>(aud = Graph, sub/oid = user)
+        APIM->>APIM: cache-store obo-graph-{oid} → GRAPH token (≈50 min)
     end
-    APIM->>API: GET /v1.0/me<br/>Authorization: Bearer Tr
+
+    Note over APIM,API: 5️⃣ APIM forwards as the user
+    APIM->>API: GET /v1.0/me<br/>Authorization: Bearer ⟨GRAPH token⟩
     API-->>APIM: 200 OK + JSON (user-scoped data)
     APIM-->>Foundry: 200 OK + JSON
-    Foundry-->>User: Tool result
+    Foundry-->>WebApp: Tool result → final agent response
+    WebApp-->>User: Render answer
 ```
+
+#### Key points about this flow
+
+- **Two distinct sign-ins are possible** — one for the web app hosting the
+  agent, and (the first time only) one for the MCP tool when it first
+  needs a user token. After the first time, APIM Credential Manager uses
+  its cached refresh token (`offline_access` scope) to silently mint new
+  user tokens, so subsequent tool invocations don't prompt the user.
+- **`foundry-mcp-client` is the OAuth client** that signs the user in for
+  the *tool*. It's separate from whatever OAuth client the host web app
+  uses. This separation is what lets Foundry attach a token whose
+  `aud = apim-obo-middletier`, which APIM's `validate-jwt` requires.
+- **APIM never sees the original web-app session.** It only sees the
+  **user token** (issued via `foundry-mcp-client` for the middle-tier
+  audience). The `oid` claim in that token is the user's directory object
+  ID, which is what ties the cached OBO token to the right user.
+- **APIM is doing two roles** in Microsoft's Agent OBO terminology:
+  1. The audience that validates the user token (Agent Identity Blueprint), and
+  2. The principal that performs the OBO exchange to get the Graph token
+     (Agent Identity).
+
+  In a more advanced setup with FIC + managed identity, these can be split,
+  but for an in-tenant APIM deployment a single app reg is fine.
 
 #### How the diagram lines up with the Microsoft "Agent OBO" steps
 
-| Microsoft step | This repo |
+| Microsoft step (uses `Tc` / `Tr`) | This repo (plain labels) |
 |---|---|
-| (1) User authenticates with the client → `Tc` | `User → Client App → Entra` (steps 1–3 in the diagram) |
-| (2) Client sends `Tc` to the agent identity blueprint | `Client → Foundry → APIM` (steps 4–5) |
-| (3) Blueprint requests `T1` using its credential (secret today; FIC/MI recommended) | Embedded inside step 8: APIM's `client_id` + `client_assertion` to AAD |
-| (4) Agent identity sends OBO request with `T1` + `Tc` | Step 8 — single `send-request` from APIM combines both roles |
-| (5) AAD returns the resource token after validating audiences | Step 9 — `Tr` returned to APIM |
-
-> APIM currently fuses "blueprint" and "agent identity" into one principal
-> (the `apim-obo-middletier` app), which is fine for in-tenant deployments.
-> Splitting them only matters when you need per-instance agent identities or
-> when adopting full Agent ID with FIC + managed identity.
+| (1) User authenticates with the client → `Tc` (user token) | Steps 5–11 — APIM Credential Manager runs auth-code via `foundry-mcp-client` |
+| (2) Client sends `Tc` to the agent identity blueprint | Step 13 — Foundry calls APIM with `Bearer ⟨user token⟩` |
+| (3) Blueprint requests `T1` using its credential (secret today; FIC/MI recommended) | Implicit in step 17: APIM authenticates to AAD using its `client_id` + `client_assertion` |
+| (4) Agent identity sends OBO request with `T1` + `Tc` | Step 17 — single `send-request` from APIM combines both roles |
+| (5) AAD returns the resource token `Tr` after validating audiences | Step 18 — Graph token returned to APIM |
 
