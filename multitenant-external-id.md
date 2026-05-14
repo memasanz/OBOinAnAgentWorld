@@ -84,33 +84,127 @@ Option A. Only the identity model and the `validate-jwt` policy differ.
 │  └──────────────────────┘  │                │   └──────────────┬─────────────────┘             │
 │                            │                │                  │ POST /chat                    │
 │  ┌──────────────────────┐  │                │                  │ Authorization: Bearer USER tk │
-│  │ External ID directory│  │                │                  │ (iss=External ID,             │
-│  │ - federates to       │  │                │                  │  tid=External ID tenant id,   │
-│  │   Tenant B Entra,    │  │                │                  │  partnerId=<custom claim>)    │
-│  │   Google, email OTP  │  │                │                  ▼                               │
-│  │ - app reg            │  │                │   ┌────────────────────────────────┐             │
-│  │   agent-host-webapp  │  │                │   │ APIM /chat                     │             │
-│  │ - users tagged with  │  │                │   │ - validate-jwt                 │             │
-│  │   partnerId claim/   │  │                │   │   • iss = External ID          │             │
-│  │   app role           │  │                │   │   • aud = agent-host-webapp    │             │
-│  └──────────────────────┘  │                │   │ - require partnerId claim      │             │
-│                            │                │   │ - allowlist partnerId values   │             │
-└────────────────────────────┘                │   │ - lookup partnerId → Foundry   │             │
-                                              │   │ - x-user-partnerId / x-user-oid│             │
-                                              │   └──────────────┬─────────────────┘             │
-                                              │                  │                               │
-                                              │                  ▼                               │
-                                              │   ┌────────────────────────────────┐             │
-                                              │   │ Per-partner Foundry project    │             │
-                                              │   │ (or single shared one — same   │             │
-                                              │   │  trade-off as Option A)        │             │
-                                              │   └──────────────┬─────────────────┘             │
-                                              │                  ▼                               │
-                                              │   ┌────────────────────────────────┐             │
-                                              │   │ Per-partner data slice         │             │
-                                              │   └────────────────────────────────┘             │
+│  │ INTERNAL user        │──┼─SSO via────────┼──┐               │ (iss=External ID,             │
+│  │ (your workforce      │  │  federated     │  │               │  tid=External ID tenant id,   │
+│  │  tenant A)           │  │  Workforce IdP │  │               │  partnerId=internal | <ext>)  │
+│  └──────────────────────┘  │                │  │               ▼                               │
+│                            │                │  │  ┌────────────────────────────────┐           │
+│  ┌──────────────────────┐  │                │  │  │ APIM /chat                     │           │
+│  │ External ID directory│  │                │  │  │ - validate-jwt                 │           │
+│  │ - federates to       │  │                │  │  │   • iss = External ID          │           │
+│  │   • Workforce A      │◄─┼────────────────┼──┘  │   • aud = agent-host-webapp    │           │
+│  │   • Tenant B Entra   │  │                │     │ - require partnerId claim      │           │
+│  │   • Google,email OTP │  │                │     │ - allowlist partnerId values   │           │
+│  │ - app reg            │  │                │     │   (incl. "internal")           │           │
+│  │   agent-host-webapp  │  │                │     │ - lookup partnerId → Foundry   │           │
+│  │ - users tagged with  │  │                │     │ - x-user-partnerId / x-user-oid│           │
+│  │   partnerId claim/   │  │                │     └──────────────┬─────────────────┘           │
+│  │   app role           │  │                │                    │                             │
+│  │   - external users:  │  │                │                    ▼                             │
+│  │     "partner-b" …    │  │                │     ┌────────────────────────────────┐           │
+│  │   - internal users:  │  │                │     │ Foundry project                │           │
+│  │     "internal"       │  │                │     │  - "internal" → internal proj. │           │
+│  └──────────────────────┘  │                │     │  - "partner-b" → partner-b proj│           │
+│                            │                │     │  (or single shared one — same  │           │
+└────────────────────────────┘                │     │   trade-off as Option A)       │           │
+                                              │     └──────────────┬─────────────────┘           │
+                                              │                    ▼                             │
+                                              │     ┌────────────────────────────────┐           │
+                                              │     │ Per-tenant data slice          │           │
+                                              │     │ (internal slice + per-partner) │           │
+                                              │     └────────────────────────────────┘           │
                                               └──────────────────────────────────────────────────┘
 ```
+
+Both internal and external users go through the **same APIM endpoint, same
+validate-jwt policy, same audience**. The only thing distinguishing them
+downstream is the value of the `partnerId` claim (`internal` vs.
+`partner-b` / `partner-c` / …).
+
+---
+
+## Internal users in the External ID model
+
+You don't need a separate identity stack for internal users — federate your
+workforce tenant into External ID as an identity provider, and internal
+users get the same one-issuer experience as everyone else.
+
+### Setup (one time)
+
+1. **In External ID**, add your workforce Entra tenant as a **federated
+   identity provider** ("Microsoft Entra ID" provider type, pointing at
+   your workforce tenant ID).
+2. In the External ID **user flow** for `agent-host-webapp`, allow the
+   workforce IdP as a sign-in option.
+3. Decide **how internal users get into the External ID directory**:
+   - **Just-in-time (JIT)** on first sign-in — simplest, default behavior.
+     The user's email/`oid` from the workforce tenant becomes a user
+     principal in External ID.
+   - **Pre-provisioned** via a sync job (e.g., from your HR system or a
+     workforce group) — better if you want the `partnerId = internal`
+     claim assigned automatically and don't want to rely on first-sign-in
+     logic.
+4. **Tag internal users** with `partnerId = internal` (custom extension
+   attribute, security group, or app role — same mechanism you use for
+   partners).
+5. Add `internal` to the APIM `<required-claims>` allowlist.
+6. Add a `PARTNER_FOUNDRY_MAP` entry: `"internal": "<internal-foundry-url>"`.
+
+### What the user experience looks like
+
+- **Internal user** opens the agent web app → External ID sign-in page
+  shows "Sign in with Workforce A" → user is bounced to your workforce
+  tenant's familiar sign-in (their normal corporate creds, MFA, CA
+  policies all apply) → bounced back to External ID → bounced back to
+  the web app, signed in.
+- **External user** opens the agent web app → same sign-in page → picks
+  "Sign in with Email/Google/Partner-B Entra" → goes through that IdP
+  → back to External ID → back to the web app.
+- **Both** end up holding a token issued by External ID, with `partnerId`
+  set to either `internal` or their partner identifier.
+
+### What changes in policy / config
+
+Just add `internal` to the existing allowlist — nothing structural changes:
+
+```xml
+<claim name="extension_{{AGENT_HOST_WEBAPP_CLIENT_ID_NO_DASHES}}_partnerId" match="any">
+  <value>internal</value>
+  <value>partner-b</value>
+  <value>partner-c</value>
+</claim>
+```
+
+### Considerations specific to internal users
+
+- **Conditional Access enforcement.** When the workforce tenant federates
+  to External ID, your workforce CA policies apply *during the workforce
+  sign-in step* (MFA, device compliance, sign-in risk). They do **not**
+  re-apply at the External ID layer. If you need additional policies on
+  top, configure them in External ID directly.
+- **`oid` is the External ID `oid`, not the workforce `oid`.** Once a
+  workforce user is federated in, they have a *new* `oid` in the External
+  ID tenant. If your data tags rows with `oid` from the workforce tenant
+  (e.g., from another system), you'll need to either store the workforce
+  `oid` as an extension attribute and pass it through as a separate claim,
+  or migrate your tagging to the External ID `oid`.
+- **Group-based authz doesn't transit federation.** Workforce security
+  groups are *not* automatically reflected in External ID. If you want
+  group-driven `partnerId` assignment for internal users, do it in
+  External ID (via app roles or extension attributes) keyed off the
+  workforce sign-in.
+- **Internal data slice gets scoped RBAC just like a partner.** The
+  internal Foundry project's MI gets RBAC on the internal Cosmos
+  container / Search index, and **only** the internal slice. Same hard
+  IAM wall as for partners. (If you go shared-Foundry, internal data is
+  on the same shared MI as external — usually undesirable; consider
+  keeping internal as its own dedicated project even if external uses
+  shared.)
+- **Don't dual-route internal traffic through Option A.** It's tempting to
+  let internal users sign in via your workforce tenant directly (no
+  External ID hop) and have APIM accept either issuer. That works (see
+  the Option A + B side-by-side section below), but it doubles your
+  policy surface for no real benefit. Pick one front door.
 
 ---
 
@@ -142,6 +236,7 @@ asserted via a required custom claim**.
     <!-- The custom partner ID claim must be present.
          Allowlist of accepted values is enforced here. -->
     <claim name="extension_{{AGENT_HOST_WEBAPP_CLIENT_ID_NO_DASHES}}_partnerId" match="any">
+      <value>internal</value>
       <value>partner-b</value>
       <value>partner-c</value>
       <!-- add more as you onboard -->
