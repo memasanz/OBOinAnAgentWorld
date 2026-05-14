@@ -97,43 +97,47 @@ here.
 ## Architecture
 
 ```
-┌─────────────────────────┐                  ┌──────────────────────────────────────────┐
-│   Partner tenant (B)    │                  │   Your tenant (A) — hosts everything     │
-│                         │                  │                                          │
-│   ┌────────────────┐    │  1. user sign-in │   ┌────────────────────────────────┐     │
-│   │ Partner end    │    │  (multi-tenant   │   │ agent-host-webapp              │     │
-│   │ user (browser) │────┼──auth-code)──────┼──►│ (multi-tenant web app, App     │     │
-│   └────────────────┘    │                  │   │  Service / Container Apps)     │     │
-│                         │                  │   └──────────────┬─────────────────┘     │
-│   ┌────────────────┐    │                  │                  │ session cookie        │
-│   │ Entra (B)      │    │                  │                  │ (oid/upn from B)      │
-│   │ - issues USER  │    │                  │                  ▼                       │
-│   │   tokens for   │    │                  │   ┌────────────────────────────────┐     │
-│   │   apps in (A)  │    │                  │   │ Foundry project (per partner)  │     │
-│   │ - SPs created  │    │                  │   │ - dedicated agent              │     │
-│   │   on consent:  │    │                  │   │ - MCP tool: OAuth Identity     │     │
-│   │   • agent-host │    │                  │   │   Passthrough                  │     │
-│   │   • foundry-   │    │  2. MCP tool     │   └──────────────┬─────────────────┘     │
-│   │     mcp-client │◄───┼──auth-code via───┤                  │                       │
-│   │   • apim-obo-  │    │  APIM Cred Mgr   │   ┌──────────────▼─────────────────┐     │
-│   │     middletier │    │  (foundry-mcp-   │   │ APIM Credential Manager        │     │
-│   │     (cascaded) │    │   client)        │   │ (brokers auth-code, caches     │     │
-│   └────────────────┘    │                  │   │  USER token per user)          │     │
-│                         │  3. USER token   │   └──────────────┬─────────────────┘     │
-│                         │  (aud=middletier,│                  │ Bearer USER token     │
-│                         │   tid=B, oid=B)  │                  ▼                       │
-│                         │ ────────────────►│   ┌────────────────────────────────┐     │
-│                         │                  │   │ APIM API                       │     │
-│                         │                  │   │ - validate-jwt (issuer in B)   │     │
-│                         │                  │   │ - OBO send-request to AAD as   │     │
-│                         │                  │   │   apim-obo-middletier          │     │
-│                         │                  │   └──────────────┬─────────────────┘     │
-│                         │                  │                  │ Graph token (for B    │
-│                         │                  │                  │ user; aud=Graph)      │
-│                         │                  │                  ▼                       │
-│                         │                  │   Microsoft Graph / SharePoint REST      │
-│                         │                  │   → returns PARTNER-TENANT data          │
-└─────────────────────────┘                  └──────────────────────────────────────────┘
+┌─────────────────────────┐                  ┌──────────────────────────────────────────────────┐
+│   Partner tenant (B)    │                  │   Your tenant (A) — hosts everything             │
+│                         │                  │                                                  │
+│   ┌────────────────┐    │  1. user sign-in │   ┌────────────────────────────────┐             │
+│   │ Partner end    │    │  (multi-tenant   │   │ agent-host-webapp              │             │
+│   │ user (browser) │────┼──auth-code)──────┼──►│ (multi-tenant web app)         │             │
+│   └────────────────┘    │                  │   └──────────────┬─────────────────┘             │
+│                         │                  │                  │ POST /chat                    │
+│                         │                  │                  │ Authorization: Bearer USER tk │
+│                         │                  │                  ▼                               │
+│   ┌────────────────┐    │                  │   ┌────────────────────────────────┐             │
+│   │ Entra (B)      │    │                  │   │ APIM  /chat  API               │             │
+│   │ - issues USER  │    │                  │   │ - validate-jwt (issuer ∈ B)    │             │
+│   │   tokens for   │    │                  │   │ - lookup tid → Foundry URL     │             │
+│   │   apps in (A)  │    │                  │   │ - swap auth → APIM MI token    │             │
+│   │ - SPs created  │    │                  │   │ - x-user-tid / x-user-oid hdrs │             │
+│   │   on consent:  │    │                  │   │ - rate-limit by tid            │             │
+│   │   • agent-host │    │                  │   └──────────────┬─────────────────┘             │
+│   │   • foundry-   │    │                  │                  │                               │
+│   │     mcp-client │◄───┼──auth-code via───┤                  ▼                               │
+│   │   • apim-obo-  │    │  APIM Cred Mgr   │   ┌────────────────────────────────┐             │
+│   │     middletier │    │  (foundry-mcp-   │   │ Foundry project (per partner)  │             │
+│   │     (cascaded) │    │   client)        │   │ - dedicated agent              │             │
+│   └────────────────┘    │                  │   │ - MCP tool: OAuth Identity     │             │
+│                         │  2. MCP tool     │   │   Passthrough                  │             │
+│                         │     auth-code    │   └──────────────┬─────────────────┘             │
+│                         │                  │                  │ Bearer USER token             │
+│                         │                  │                  │ for middle-tier audience      │
+│                         │  3. USER token   │                  ▼                               │
+│                         │  (aud=middletier,│   ┌────────────────────────────────┐             │
+│                         │   tid=B, oid=B)  │   │ APIM  /graph  API              │             │
+│                         │ ────────────────►│   │ - same validate-jwt block      │             │
+│                         │                  │   │ - OBO send-request to AAD as   │             │
+│                         │                  │   │   apim-obo-middletier          │             │
+│                         │                  │   └──────────────┬─────────────────┘             │
+│                         │                  │                  │ Graph token (for B            │
+│                         │                  │                  │ user; aud=Graph)              │
+│                         │                  │                  ▼                               │
+│                         │                  │   Microsoft Graph / SharePoint REST              │
+│                         │                  │   → returns PARTNER-TENANT data                  │
+└─────────────────────────┘                  └──────────────────────────────────────────────────┘
 ```
 
 Key observations:
@@ -144,6 +148,15 @@ Key observations:
   - `agent-host-webapp` — the web app the user signs into (phase 1)
   - `foundry-mcp-client` — the OAuth client the MCP tool uses (phase 2)
   - `apim-obo-middletier` — the OBO middle tier (audience of the USER token)
+- **Two APIM APIs in the same instance**, both protected by the same
+  `validate-jwt` block (same audiences, same issuer allowlist):
+  - `/chat` — front of every Foundry project; routes by `tid` claim
+  - `/graph` (or `/sharepoint`) — performs the OBO exchange to the downstream API
+- **Per-partner Foundry project isolation.** The `/chat` API uses a Named
+  Value mapping `tid → Foundry agent URL` to send each partner's traffic to
+  their dedicated project. APIM authenticates to Foundry using its **managed
+  identity**; the user identity travels in `x-user-tid` / `x-user-oid`
+  headers so the agent can act on the user's behalf.
 - **The partner admin's only required action** is one-time admin consent in
   Tenant B for `agent-host-webapp` and `foundry-mcp-client`. Consenting to
   `foundry-mcp-client` cascades a service principal for `apim-obo-middletier`
@@ -163,10 +176,11 @@ Key observations:
 
 ## App registration changes
 
-Apply these changes to the existing `apim-obo-middletier` app reg from the
-single-tenant doc.
+Three multi-tenant app registrations live in your tenant. The middle-tier
+already exists from the single-tenant doc; the other two are new for this
+pattern.
 
-### Make the middle-tier multi-tenant
+### 1. `apim-obo-middletier` — make it multi-tenant
 
 In Entra → App registrations → `apim-obo-middletier` → **Authentication**:
 
@@ -178,22 +192,57 @@ This sets `signInAudience = AzureADMultipleOrgs` in the manifest.
 > **Do not** include "personal Microsoft accounts" unless you have a specific
 > consumer-account use case — adds attack surface for no benefit here.
 
-### `foundry-mcp-client`
+### 2. `agent-host-webapp` — multi-tenant web app
 
-You do **not** publish a multi-tenant `foundry-mcp-client`. Each partner
-tenant creates its own client app reg in their tenant, pointing at your
-multi-tenant middle-tier as the API resource. This avoids sharing a client
-secret across tenant boundaries.
+This is the only thing partner end users sign into. Lives in Tenant A; consented
+in each Tenant B.
 
-(Alternative: a shared multi-tenant client is possible but requires shipping a
-secret to each partner — generally not recommended.)
+- **Supported account types:** Multitenant
+- **Redirect URI:** the web app's sign-in callback (e.g.,
+  `https://contoso-agent-host.azurewebsites.net/.auth/login/aad/callback`
+  if you use App Service Easy Auth, or your own MSAL callback)
+- **API permissions:** `User.Read` on Microsoft Graph (delegated) — the bare
+  minimum to sign in. The web app does *not* need any permission on
+  `apim-obo-middletier`; the OBO flow is initiated later by the MCP tool, not
+  by the web app.
+- **Client secret or federated identity credential** for confidential client
+  flow.
+
+### 3. `foundry-mcp-client` — multi-tenant MCP OAuth client
+
+This is the OAuth client APIM Credential Manager uses to acquire USER tokens
+for the middle-tier audience.
+
+- **Supported account types:** Multitenant
+- **Redirect URI:** the APIM Credential Manager broker URL —
+  `https://global.consent.azure-apim.net/redirect/<your-apim-credmgr-guid>-<connection-name>`
+- **API permissions:** delegated `access_as_user` on `apim-obo-middletier`,
+  admin-consented in your tenant
+- **Client secret or FIC**
+
+> Because all three app regs live in **your** tenant, you do not ship any
+> client secret to the partner. The partner admin's only action is consenting
+> via URL.
 
 ---
 
-## APIM policy update
+## APIM APIs
 
-Replace the `validate-jwt` block from the single-tenant policy with an explicit
-multi-tenant version. Every change is highlighted in comments.
+You will operate **two APIs** in the same APIM instance:
+
+| API | Path | Purpose | Backend |
+|---|---|---|---|
+| `chat` | `/chat` | Web app → APIM → Foundry agent endpoint, routed per tenant | Foundry project (one per partner) |
+| `graph` (or `sharepoint`) | `/graph` | Foundry MCP tool → APIM → downstream API (OBO exchange) | Microsoft Graph / SharePoint REST |
+
+Both APIs share the **same** `validate-jwt` block (same audiences, same issuer
+allowlist) so a single tenant allowlist controls both surfaces. Removing a
+partner from the allowlist immediately blocks them on both APIs.
+
+### Shared `validate-jwt` (used by both APIs)
+
+This replaces the single-tenant `validate-jwt`. It accepts USER tokens from
+any tenant in the allowlist, in either v1 or v2 format.
 
 ```xml
 <validate-jwt header-name="Authorization"
@@ -204,9 +253,7 @@ multi-tenant version. Every change is highlighted in comments.
   <openid-config url="https://login.microsoftonline.com/organizations/v2.0/.well-known/openid-configuration" />
 
   <audiences>
-    <!-- v1 audience format -->
     <audience>api://{{APIM_OBO_MIDDLETIER_CLIENT_ID}}</audience>
-    <!-- v2 audience format (bare GUID) -->
     <audience>{{APIM_OBO_MIDDLETIER_CLIENT_ID}}</audience>
   </audiences>
 
@@ -224,21 +271,95 @@ multi-tenant version. Every change is highlighted in comments.
     </claim>
   </required-claims>
 </validate-jwt>
-```
 
-### Optional: enforce a per-user `oid` allowlist
-
-If you want fine-grained control over *which* users in an allowed tenant may
-call the API — without trusting partner admins to manage app role assignments —
-add a check after `validate-jwt`. Store the allowed `oid`s in a Named Value
-(comma-separated) or, for more than a handful, in Cosmos / blob / Key Vault.
-
-```xml
-<set-variable name="callerOid"
-              value="@(context.Principal.Claims.GetValueOrDefault("oid",""))" />
 <set-variable name="callerTid"
               value="@(context.Principal.Claims.GetValueOrDefault("tid",""))" />
+<set-variable name="callerOid"
+              value="@(context.Principal.Claims.GetValueOrDefault("oid",""))" />
+```
 
+### `chat` API policy — route to per-partner Foundry project
+
+The web app POSTs the user's chat request here with the USER token. APIM picks
+the correct Foundry project based on `tid` and forwards using its own
+**managed identity** (Foundry RBAC in Tenant A grants `Azure AI User` to
+APIM's MI on each partner project).
+
+Store the partner mapping as a JSON Named Value
+`PARTNER_FOUNDRY_MAP`, e.g.:
+
+```json
+{
+  "<partner-tenant-1-guid>": "https://eastus.api.azureml.ms/agents/v1/.../partnerB-project",
+  "<partner-tenant-2-guid>": "https://eastus.api.azureml.ms/agents/v1/.../partnerC-project"
+}
+```
+
+Policy:
+
+```xml
+<inbound>
+  <base />
+
+  <!-- Includes the shared validate-jwt block above; sets callerTid / callerOid -->
+
+  <set-variable name="foundryUrl" value="@{
+      var map = JObject.Parse((string)"{{PARTNER_FOUNDRY_MAP}}");
+      var tid = (string)context.Variables["callerTid"];
+      var url = (string?)map[tid];
+      return string.IsNullOrEmpty(url) ? null : url;
+  }" />
+
+  <choose>
+    <when condition="@(context.Variables["foundryUrl"] == null)">
+      <return-response>
+        <set-status code="403" reason="Forbidden" />
+        <set-body>{"error":"no Foundry project mapped for this tenant"}</set-body>
+      </return-response>
+    </when>
+  </choose>
+
+  <set-backend-service base-url="@((string)context.Variables["foundryUrl"])" />
+
+  <!-- Replace inbound user auth with APIM's managed-identity token for Foundry.
+       The user identity continues to flow as headers (below) so the agent and
+       MCP tool can act on the user's behalf downstream. -->
+  <authentication-managed-identity resource="https://ai.azure.com" />
+
+  <!-- Pass user identity to the agent runtime so the MCP tool's OAuth
+       Identity Passthrough connection uses the right user. -->
+  <set-header name="x-user-tid" exists-action="override">
+    <value>@((string)context.Variables["callerTid"])</value>
+  </set-header>
+  <set-header name="x-user-oid" exists-action="override">
+    <value>@((string)context.Variables["callerOid"])</value>
+  </set-header>
+
+  <!-- Per-partner throttling, keyed on tid. -->
+  <rate-limit-by-key calls="60" renewal-period="60"
+                     counter-key="@((string)context.Variables["callerTid"])" />
+</inbound>
+```
+
+> The exact `resource` URI for `<authentication-managed-identity>` depends on
+> which Foundry agent endpoint you're hitting (Azure ML data plane vs. the
+> newer Foundry control-plane endpoints). Verify against the Foundry SDK
+> reference for the agent endpoint you target.
+
+### `graph` API policy — unchanged structure, shared `validate-jwt`
+
+The Graph (or SharePoint) API keeps the OBO `send-request` from the
+single-tenant doc. The only change: it uses the **same** shared `validate-jwt`
+block above so the tenant allowlist is enforced identically.
+
+### Optional: enforce a per-user `oid` allowlist (either or both APIs)
+
+If you want fine-grained control over *which* users in an allowed tenant may
+call — without trusting partner admins to manage anything — add this after
+`validate-jwt`. Store the allowed `oid`s in a Named Value (CSV) or, for many,
+in Cosmos / blob / Key Vault.
+
+```xml
 <choose>
   <when condition="@{
       var allowed = ((string)"{{ALLOWED_OIDS_CSV}}").Split(',');
@@ -254,16 +375,16 @@ add a check after `validate-jwt`. Store the allowed `oid`s in a Named Value
 
 ### Optional: log `tid` + `oid` for every call
 
-Highly recommended in the multi-tenant model — gives you a per-call audit
-record without ever needing to know the user's name.
+Highly recommended. Audit record per call without ever knowing the user's name.
 
 ```xml
 <log-to-eventhub logger-id="apim-audit">@{
     return new JObject(
       new JProperty("tid", context.Variables["callerTid"]),
       new JProperty("oid", context.Variables["callerOid"]),
-      new JProperty("op", context.Operation.Name),
-      new JProperty("ts", DateTime.UtcNow)
+      new JProperty("api", context.Api.Name),
+      new JProperty("op",  context.Operation.Name),
+      new JProperty("ts",  DateTime.UtcNow)
     ).ToString();
 }</log-to-eventhub>
 ```
@@ -273,34 +394,38 @@ record without ever needing to know the user's name.
 ## Onboarding a new partner tenant
 
 A repeatable runbook. Steps marked **You** are on the API publisher side;
-**Partner** steps are done by an admin in the partner tenant.
+**Partner** steps are done by an admin in the partner tenant. All "You" steps
+happen in **your** tenant (Tenant A).
 
 | # | Owner | Action |
 |---|---|---|
-| 1 | You | Send the partner admin the consent URL: `https://login.microsoftonline.com/<partnerTenantId>/adminconsent?client_id=<middletier-app-id>` |
-| 2 | Partner | Open the URL → review permissions → grant consent. SP for `apim-obo-middletier` materializes in their tenant. |
-| 3 | You | Add `https://login.microsoftonline.com/<partnerTenantId>/v2.0` to the `<issuers>` allowlist in your APIM policy and deploy. |
-| 4 | Partner | Create their own `foundry-mcp-client` app reg in their tenant. Add `access_as_user` permission on `apim-obo-middletier` (it will appear in the API picker after step 2). Admin-consent it. |
-| 5 | Partner | Add APIM Credential Manager redirect URI: `https://global.consent.azure-apim.net/redirect/<your-apim-credmgr-guid>-<connection-name>`. (You give them the URL.) |
-| 6 | Partner | Build the Foundry agent + MCP tool pointing at your APIM URL using their client ID + secret. |
+| 1 | You | Provision a **dedicated Foundry project** for the partner in Tenant A. Configure the agent and the MCP tool (OAuth Identity Passthrough → `foundry-mcp-client` connection). |
+| 2 | You | Grant APIM's managed identity `Azure AI User` (or equivalent) RBAC on the new Foundry project so APIM can invoke the agent. |
+| 3 | You | Add a row to the `PARTNER_FOUNDRY_MAP` Named Value: `"<partnerTenantId>": "<foundry agent endpoint>"`. |
+| 4 | You | Add `https://login.microsoftonline.com/<partnerTenantId>/v2.0` to the `<issuers>` allowlist in the shared `validate-jwt` block. Deploy both APIM APIs. |
+| 5 | You | Send the partner admin **two** consent URLs: <br/>• `https://login.microsoftonline.com/<partnerTenantId>/adminconsent?client_id=<agent-host-webapp-id>` <br/>• `https://login.microsoftonline.com/<partnerTenantId>/adminconsent?client_id=<foundry-mcp-client-id>` |
+| 6 | Partner | Open both URLs → review permissions → grant consent. SPs for `agent-host-webapp` and `foundry-mcp-client` materialize in their tenant. The `foundry-mcp-client` consent **cascades** an SP for `apim-obo-middletier` because of the declared delegated permission. |
 | 7 | You | (If using oid allowlist) Receive list of `oid` GUIDs from partner; add to APIM Named Value. |
 | 8 | Both | End-to-end smoke test (see *Sanity test* below). |
 
 After onboarding, the partner admin has **no required ongoing actions**. User
 add/remove inside their tenant flows through their own IdP normally; you only
-update the oid allowlist if you're using one.
+update the oid allowlist (if used) or rotate the Foundry mapping.
 
 ### Off-boarding a tenant — kill switch
 
-To revoke an entire partner tenant immediately:
+Three independent levers, any one of which cuts off the partner:
 
-- Remove their `<issuer>` from the APIM policy → all their tokens stop
-  validating within seconds of policy deploy.
-- (Defense in depth) Ask their admin to remove the enterprise app for
-  `apim-obo-middletier` from their tenant → no new tokens can be issued at all.
+- **Remove their `<issuer>`** from the shared `validate-jwt` block →
+  both `/chat` and `/graph` reject their tokens within seconds of policy deploy.
+- **Remove their entry from `PARTNER_FOUNDRY_MAP`** → `/chat` returns 403 even
+  if the token is otherwise valid.
+- **Ask their admin to remove the enterprise apps** (`agent-host-webapp`,
+  `foundry-mcp-client`) from their tenant → no new tokens can be issued at all.
 
-No cleanup is needed in your directory because no external user records exist
-there.
+You can also disable or delete the partner's dedicated Foundry project to
+reclaim resources. No cleanup is needed in your directory because no external
+user records exist there.
 
 ---
 
@@ -356,10 +481,14 @@ These are *in addition* to the single-tenant pitfalls in the Graph/SharePoint do
 - **Trying to assign external users to your groups.** They don't exist in
   your tenant — there's nothing to assign. Use `tid`/`oid` claim checks or
   app roles instead.
-- **Leaking a shared client secret.** If you go down the (not recommended)
-  path of a single multi-tenant `foundry-mcp-client` shared across partners,
-  rotation becomes a coordinated event across every partner tenant. Per-tenant
-  client app regs avoid this entirely.
+- **Forgetting to add the partner to `PARTNER_FOUNDRY_MAP`.** `validate-jwt`
+  passes (issuer is in the allowlist) but `/chat` returns 403 because the
+  routing lookup fails. Onboarding step 3 covers this — verify the Named Value
+  was updated and deployed.
+- **APIM managed identity not granted Foundry RBAC.** `/chat` validates the
+  user token, picks the right Foundry URL, then fails calling Foundry with
+  401/403. Confirm APIM's MI has `Azure AI User` (or equivalent) on every
+  per-partner Foundry project.
 - **Assuming Graph data is yours.** OBO returns Graph data scoped to the
   USER's tenant — if a partner-tenant user calls `/me`, they get their *own*
   profile from *their* tenant, not anything from your directory. This is
