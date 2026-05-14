@@ -244,7 +244,21 @@ behalf of users) should obtain tokens. Two key references:
 
 ## How this maps to what's in this repo
 
-The Microsoft "Agent OBO" pattern introduces two related identities:
+Microsoft's docs use a short-hand vocabulary for the tokens involved in the
+agent OBO dance. It's not obvious from context, so:
+
+| Symbol | Microsoft's name | What it actually is | In this repo |
+|---|---|---|---|
+| **`Tc`** | "Client token" | The **user token** — issued to the calling client app, audience = the middle tier. This is the bearer token the agent attaches when it calls APIM. Carries the user's `oid`/`upn`. | The user token Foundry's Credential Manager obtains via `foundry-mcp-client` (`aud = apim-obo-middletier`) |
+| **`T1`** | Blueprint credential token | A token the **middle tier (blueprint)** mints for *itself* to prove its identity to AAD when requesting an OBO exchange. Today this is the `client_assertion`/`client_secret` APIM presents; in a FIC/MI setup it's a token issued to the managed identity. | Implicit — APIM presents its `client_id` + `client_assertion` to AAD's `/token` endpoint |
+| **`Tr`** | "Resource token" | The **downstream-resource token** AAD returns from the OBO exchange. Audience = Graph or SharePoint. APIM forwards this to the actual API. | The Graph/SharePoint token APIM receives back and uses as `Authorization: Bearer …` to the downstream API |
+
+The OBO exchange in one line: **AAD takes `Tc` + `T1` and returns `Tr`** —
+"prove you have the user's permission (`Tc`) and prove you are the middle
+tier (`T1`), and I'll give you a token for the downstream resource (`Tr`)."
+
+Microsoft's "Agent OBO" pattern then introduces two related identities that
+share `T1` work between them:
 
 | Microsoft term | What it is | Mapping in this repo |
 |---|---|---|
