@@ -11,6 +11,7 @@ design choices).
 |---|---|
 | OBO to **SharePoint REST** | [`obo-foundry-apim-sharepoint.md`](./obo-foundry-apim-sharepoint.md) |
 | OBO to **Microsoft Graph** | [`obo-foundry-apim-graph.md`](./obo-foundry-apim-graph.md) |
+| **Multi-tenant external access** (no B2B guests) | [`obo-foundry-apim-multitenant.md`](./obo-foundry-apim-multitenant.md) |
 
 ---
 
@@ -215,7 +216,7 @@ sequenceDiagram
         WebApp-->>Browser: 302 → CredMgr /authorize
         Browser->>CredMgr: Begin auth-code + PKCE
         CredMgr->>Entra: /authorize<br/>client_id = foundry-mcp-client<br/>scope = api://MIDDLETIER/access_as_user offline_access
-        Entra-->>Browser: Sign-in / consent (first time only;<br/>typically silent if same Entra session as step 1)
+        Entra-->>Browser: Sign-in / consent first time only<br/>typically silent if same Entra session as phase 1
         Browser-->>Entra: Authenticate
         Entra-->>CredMgr: Authorization code → exchange for tokens
         CredMgr->>CredMgr: Cache USER token + refresh token (per user)
