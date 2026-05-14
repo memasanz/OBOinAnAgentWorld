@@ -110,7 +110,10 @@ In **Entra ID → App registrations → `apim-obo-middletier`**:
      ![Expose an API — Add a scope](./images/expose_api_01.jpg)
 
    - A valid **client secret** → `APIM_OBO_MIDDLETIER_CLIENT_SECRET`
-   - `"accessTokenAcceptedVersion": 2` in the manifest
+   - `"accessTokenAcceptedVersion": 2` (or `"requestedAccessTokenVersion": 2`
+     in the newer manifest schema) in the **Manifest** blade
+
+     ![Manifest — accessTokenAcceptedVersion set to 2](./images/expose_api_02.jpg)
 
 > ⚠️ **`.default` returns all consented scopes.** The OBO token will carry
 > every Graph delegated permission the user/admin has consented to for this
@@ -133,6 +136,10 @@ each time.
 ---
 
 ## Step 3 — APIM Named Values
+
+In the Azure portal: **APIM instance → APIs → Named values → + Add**.
+
+![APIM Named values](./images/expose_api_03.jpg)
 
 Reuse the existing named values; add one for the Graph base URL if you like:
 
