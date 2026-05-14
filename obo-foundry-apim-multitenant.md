@@ -215,6 +215,50 @@ Key observations:
 
 ---
 
+## Internal users (your workforce tenant)
+
+Internal users from your workforce tenant (Tenant A) use the **same path** as
+external partners — same web app, same APIM `/chat`, same agent flow.
+Mechanically:
+
+- The `<issuers>` allowlist already includes
+  `https://login.microsoftonline.com/{{YOUR_TENANT_ID}}/v2.0` alongside the
+  partner tenants, so workforce-issued tokens validate the same way.
+- Internal users' tokens carry `tid = <yourTenantId>` and a workforce `oid`.
+- Treat your tenant ID as just another `PARTNER_FOUNDRY_MAP` key:
+
+  ```json
+  {
+    "<your-tenant-id>":     "https://eastus.api.azureml.ms/.../internal-project",
+    "<partner-tenant-1-id>":"https://eastus.api.azureml.ms/.../partnerB-project",
+    "<partner-tenant-2-id>":"https://eastus.api.azureml.ms/.../partnerC-project"
+  }
+  ```
+
+- The internal Foundry project's MI gets RBAC on the **internal** Cosmos /
+  Search / Storage slice — same hard-IAM-wall pattern as for any partner.
+  Internal users **cannot** see partner data, and partner Foundry MIs
+  **cannot** see internal data.
+- Inside the agent, the `oid` filter still applies for per-user separation
+  among internal users (one employee can't read another's conversations).
+
+A few things specific to internal users:
+
+- **No admin-consent step.** Your tenant already trusts
+  `agent-host-webapp` since it's registered there.
+- **Conditional Access for internal users is your standard workforce CA.**
+  No External ID layer is involved — MFA, device compliance, and risk
+  policies apply directly during sign-in.
+- **No partner SP-materialization concern.** Internal users don't need the
+  multi-tenant consent dance.
+- **Don't put internal data in a partner's slice.** It's tempting to
+  collapse "internal users" into one of the partner buckets to avoid
+  spinning up an internal slice — don't. Keep internal as its own
+  Foundry project + data slice for the same reasons you keep partners
+  separate.
+
+---
+
 ## App registration
 
 Only one app reg is required for this pattern.
