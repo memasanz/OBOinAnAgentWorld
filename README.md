@@ -60,7 +60,8 @@ What's the same in both:
 
 - App registration design (single middle-tier app, optional separate client
   app with `knownClientApplications`)
-- `validate-jwt` audience = `api://<APIM_OBO_MIDDLETIER_CLIENT_ID>`
+- `validate-jwt` accepts both audience forms — the bare client-id GUID
+  (v2 tokens) and `api://<APIM_OBO_MIDDLETIER_CLIENT_ID>` (v1 tokens)
 - Required `scp` claim = `access_as_user`
 - AAD token endpoint + OBO request shape
 - Per-user caching strategy and TTL (~50 min, under the typical 60-min token
@@ -111,3 +112,94 @@ differ only in:
 - Need cross-Microsoft-365 data (Files, Mail, Calendar, Teams, Users)?
   → Graph flow
 - Need both? → One APIM app, two APIM APIs, two policies (same shape)
+
+---
+
+## Background: Microsoft Entra Agent ID OAuth
+
+Microsoft has published guidance for how **agents** (AI agents acting on
+behalf of users) should obtain tokens. Two key references:
+
+| Reference | What it covers |
+|---|---|
+| [Authentication protocols in agents](https://learn.microsoft.com/en-us/entra/agent-id/agent-oauth-protocols) | Overview of the three OAuth flows agents support: on-behalf-of, autonomous, and "agent's user account" |
+| [Agent OAuth flows: On behalf of flow](https://learn.microsoft.com/en-us/entra/agent-id/agent-on-behalf-of-oauth-flow) | Step-by-step OBO flow specifically for agents, including the federated identity credential / managed identity pattern |
+
+### How this maps to what's in this repo
+
+The Microsoft "Agent OBO" pattern introduces two related identities:
+
+| Microsoft term | What it is | Mapping in this repo |
+|---|---|---|
+| **Agent identity blueprint** | The "parent" confidential client app representing the agent product/service. Holds delegated permissions and (preferably) a **managed identity / FIC** as its credential. Equivalent to a classic OBO **middle-tier API** app. | `apim-obo-middletier` (the app APIM uses to perform the OBO exchange) |
+| **Agent identity** | A child identity that performs the actual OBO token exchange on behalf of a specific agent instance. Authenticates to Entra by presenting a token (`T1`) issued to its parent blueprint, plus the user's token (`Tc`). | Not modeled separately today — APIM acts as both the audience for `Tc` *and* the principal performing the OBO exchange, using the middle-tier's secret. |
+| **Client app** (the calling agent) | The OAuth client that signs the user in and obtains `Tc`. | `foundry-mcp-client` (the app reg Foundry's MCP credential provider uses) |
+
+### Key rules from the Microsoft references
+
+- **No `/authorize` for agents.** Agents are confidential clients that
+  exchange tokens programmatically. They do not run interactive auth-code
+  flows themselves — a separate **client app** (e.g. `foundry-mcp-client`)
+  handles user sign-in and produces the user token (`Tc`).
+- **Supported grant types:** `client_credentials`, `jwt-bearer` (used for
+  OBO), and `refresh_token` (for background continuation of user-context
+  work).
+- **Audience rules for OBO:** the user token (`Tc`) must have
+  `aud = AgentIdentityBlueprint client ID`. In our setup, that is
+  `aud = apim-obo-middletier client ID` — which is exactly what the APIM
+  `validate-jwt` policy enforces.
+- **Don't use client secrets in production.** Microsoft strongly recommends
+  **federated identity credentials (FIC) backed by a managed identity**, or
+  client certificates, instead of a client secret on the middle-tier /
+  blueprint app. The current docs show `client_secret` for simplicity; for
+  production, swap APIM's named-value secret for a FIC + UAMI configuration
+  (a future enhancement to this repo).
+
+### Auth flow (mermaid)
+
+This is the end-to-end shape used in this repo, expressed in Microsoft's
+agent-OBO terminology:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant Client as Client App<br/>(foundry-mcp-client)
+    participant Foundry as AI Foundry Agent
+    participant Entra as Microsoft Entra ID
+    participant APIM as APIM<br/>(apim-obo-middletier ≡ Agent Identity Blueprint)
+    participant API as Downstream API<br/>(Graph / SharePoint)
+
+    User->>Client: Sign in (auth-code + PKCE via APIM Credential Manager)
+    Client->>Entra: Authorization request<br/>scope = api://MIDDLETIER/access_as_user
+    Entra-->>Client: User access token Tc<br/>(aud = MIDDLETIER, scp = access_as_user, oid = user)
+    Client->>Foundry: Pass Tc as bearer
+    Foundry->>APIM: GET /graph/me<br/>Authorization: Bearer Tc
+    APIM->>APIM: validate-jwt (aud, scp, exp, iss)
+    APIM->>APIM: cache-lookup obo-graph-{oid}
+    alt cache miss
+        APIM->>Entra: POST /oauth2/v2.0/token<br/>grant_type=jwt-bearer<br/>assertion=Tc<br/>scope=https://graph.microsoft.com/.default<br/>requested_token_use=on_behalf_of<br/>client_id=MIDDLETIER<br/>client_assertion=⟨secret or FIC/MI⟩
+        Entra-->>APIM: Resource token Tr<br/>(aud = Graph, sub/oid = user)
+        APIM->>APIM: cache-store obo-graph-{oid} → Tr
+    end
+    APIM->>API: GET /v1.0/me<br/>Authorization: Bearer Tr
+    API-->>APIM: 200 OK + JSON (user-scoped data)
+    APIM-->>Foundry: 200 OK + JSON
+    Foundry-->>User: Tool result
+```
+
+#### How the diagram lines up with the Microsoft "Agent OBO" steps
+
+| Microsoft step | This repo |
+|---|---|
+| (1) User authenticates with the client → `Tc` | `User → Client App → Entra` (steps 1–3 in the diagram) |
+| (2) Client sends `Tc` to the agent identity blueprint | `Client → Foundry → APIM` (steps 4–5) |
+| (3) Blueprint requests `T1` using its credential (secret today; FIC/MI recommended) | Embedded inside step 8: APIM's `client_id` + `client_assertion` to AAD |
+| (4) Agent identity sends OBO request with `T1` + `Tc` | Step 8 — single `send-request` from APIM combines both roles |
+| (5) AAD returns the resource token after validating audiences | Step 9 — `Tr` returned to APIM |
+
+> APIM currently fuses "blueprint" and "agent identity" into one principal
+> (the `apim-obo-middletier` app), which is fine for in-tenant deployments.
+> Splitting them only matters when you need per-instance agent identities or
+> when adopting full Agent ID with FIC + managed identity.
+

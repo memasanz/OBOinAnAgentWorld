@@ -71,6 +71,12 @@ In **Entra ID → App registrations → `apim-obo-middletier`**:
 
    Click **Grant admin consent for `<tenant>`** at the top of the permissions list.
 
+   ![API permissions — Grant admin consent button](./images/expose_api_07.jpg)
+
+   After clicking, each permission row should show ✅ **"Granted for `<tenant>`"** in the Status column:
+
+   ![API permissions — Granted for tenant confirmation](./images/expose_api_08.jpg)
+
    ### About admin consent
 
    The Azure portal labels each permission with **Admin consent required: Yes/No**.
@@ -121,26 +127,7 @@ In **Entra ID → App registrations → `apim-obo-middletier`**:
 
 ---
 
-## Step 2 — AI Foundry Agent Config
-
-No change from the SharePoint scenario. The user still signs in with scope:
-
-```
-api://<APIM_OBO_MIDDLETIER_CLIENT_ID>/access_as_user
-```
-
-The same user token works for both APIM APIs (SharePoint and Graph), because
-the OBO exchange happens *server-side* with a different downstream `scope`
-each time.
-
-For the concrete wiring of an AI Foundry MCP tool that uses **OAuth Identity
-Passthrough**, see
-[Wiring up an AI Foundry MCP tool (OAuth Identity Passthrough)](#wiring-up-an-ai-foundry-mcp-tool-oauth-identity-passthrough)
-at the end of this document.
-
----
-
-## Step 3 — APIM Named Values
+## Step 2 — APIM Named Values
 
 In the Azure portal: **APIM instance → APIs → Named values → + Add**.
 
@@ -157,7 +144,7 @@ Reuse the existing named values; add one for the Graph base URL if you like:
 
 ---
 
-## Step 4 — Create the API and Add an Operation in APIM
+## Step 3 — Create the API and Add an Operation in APIM
 
 ### Create the API
 
@@ -189,7 +176,7 @@ Click **Save**.
 
 ---
 
-## Step 5 — APIM Policy: Validate Inbound Token + Perform OBO for Graph
+## Step 4 — APIM Policy: Validate Inbound Token + Perform OBO for Graph
 
 On the `Microsoft Graph (OBO)` API → **Design** tab → select **All operations**
 (top of the operation list, so the policy applies to every operation). In the
@@ -306,7 +293,7 @@ SharePoint policy are the **OBO scope** and the **backend base URL**.
 
 ---
 
-## Step 6 — Test End-to-End
+## Step 5 — Test End-to-End
 
 1. Get a user token for `api://<APIM_OBO_MIDDLETIER_CLIENT_ID>/access_as_user`
    (see [Testing with the Azure CLI](#testing-with-the-azure-cli) below).
@@ -395,6 +382,132 @@ curl.exe -H "Authorization: Bearer $token" `
 
 If you skip the authorized-client-application step, `az account get-access-token`
 fails with `AADSTS65001` (the Azure CLI hasn't been consented to call your API).
+
+---
+
+## Step 6 — Wiring up an AI Foundry MCP tool (OAuth Identity Passthrough)
+
+This section describes how to plug the OBO-protected APIM endpoint into an
+**AI Foundry agent** as an MCP tool, using the **OAuth Identity Passthrough**
+auth mode. With this mode, Foundry runs an OAuth 2.0 auth-code flow against
+Entra to obtain a *user* token, then attaches it as `Authorization: Bearer`
+to every MCP request. APIM''s `validate-jwt` policy validates that token,
+performs the OBO exchange, and forwards to Graph as the user.
+
+### Architecture
+
+```
+User ──> AI Foundry Agent ──(MCP + user bearer)──> APIM ──(OBO swap)──> Microsoft Graph
+                  │
+                  └── auth-code flow (PKCE) brokered by APIM Credential Manager
+                      against Entra, using the foundry-mcp-client app reg
+```
+
+### App registrations involved
+
+You should now have **three** app registrations:
+
+| App registration | Role | Holds secret? |
+|---|---|---|
+| `apim-obo-middletier` | The OBO middle tier. Holds Graph delegated permissions. APIM uses its client secret to perform the OBO exchange. | ✅ Yes (used by APIM) |
+| `foundry-mcp-client` | The OAuth client Foundry uses to sign users in. Has delegated permission to call `apim-obo-middletier/access_as_user`. | ✅ Yes (given to Foundry) |
+| *(optional)* test client / Azure CLI pre-auth | For ad-hoc local testing | No |
+
+### Step F1 — Create the `foundry-mcp-client` app registration
+
+In **Entra ID → App registrations → + New registration**:
+
+- Name: `foundry-mcp-client`
+- Supported account types: single tenant
+- Redirect URI: leave blank for now — you''ll add the APIM Credential Manager
+  URL once Foundry generates it.
+
+After creation:
+
+1. **Certificates & secrets → + New client secret** → copy the *value* (you''ll
+   paste it into Foundry).
+2. **API permissions → + Add a permission → My APIs → `apim-obo-middletier`
+   → Delegated → ✅ `access_as_user` → Add permissions**.
+3. Click **Grant admin consent for `<tenant>`**.
+
+   > Even though `access_as_user` shows "Admin consent required: No",
+   > granting it once at the tenant level avoids per-user consent prompts
+   > inside the agent UI (APIM Credential Manager doesn''t always surface
+   > them cleanly).
+
+4. *(Optional but recommended)* On `apim-obo-middletier` →
+   **Expose an API → Authorized client applications → + Add**:
+   - Client ID: `<foundry-mcp-client app id>`
+   - ✅ `access_as_user`
+
+   This pre-authorizes the Foundry client so users skip the consent dialog
+   entirely.
+
+### Step F2 — Add the MCP tool in Foundry
+
+In your AI Foundry project: **Agent → Tools → + Add → Model Context Protocol**.
+
+Fill in the dialog:
+
+| Field | Value |
+|---|---|
+| **Name** | `apim-get-user-details` (or whatever describes the tool) |
+| **Remote MCP Server endpoint** | Your APIM MCP endpoint, e.g. `https://mmz-apim-std.azure-api.net/graph` |
+| **Authentication** | **OAuth Identity Passthrough** |
+| **Client ID** | `<foundry-mcp-client app''s Application (client) ID>` |
+| **Client secret** | the secret value from Step F1 |
+| **Auth URL** | `https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/authorize` |
+| **Token URL** | `https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token` |
+| **Refresh URL** | `https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token` (same as Token URL for v2) |
+| **Scopes** | `api://<APIM_OBO_MIDDLETIER_CLIENT_ID>/access_as_user offline_access openid profile` |
+
+> 🔑 The `offline_access` scope is what makes Entra issue a refresh token,
+> so Foundry can use the Refresh URL.
+
+Click **Connect**.
+
+### Step F3 — Add the APIM Credential Manager redirect URI
+
+After clicking Connect, Foundry shows a dialog like *"You''ve created a
+credential provider"* with a redirect URL such as:
+
+```
+https://global.consent.azure-apim.net/redirect/<guid>-<connection-name>
+```
+
+Copy that URL, then in Entra:
+
+1. **App registrations → `foundry-mcp-client` → Authentication**
+2. Under **Web platform** (add a Web platform if missing) → **+ Add URI** →
+   paste the URL.
+3. Leave **Implicit grant and hybrid flows** checkboxes **unchecked** —
+   auth-code with PKCE doesn''t need them.
+4. **Save**.
+
+Back in Foundry, finish the connection. You''ll be redirected through Entra
+sign-in once; on success the connection should show ✅.
+
+### Step F4 — Sanity test
+
+In the Foundry agent playground, invoke the tool. Expected behavior:
+
+1. First call → Foundry pops a sign-in window (only on first use per user).
+2. After sign-in, the agent calls APIM with `Authorization: Bearer <user-token>`.
+3. APIM validates, performs OBO, calls Graph as the user, returns the result.
+
+If something fails, see the [Troubleshooting](#troubleshooting) section above —
+most common failures are missing admin consent, missing redirect URI, or
+the APIM API still requiring a subscription key (Foundry won''t send one).
+
+### Foundry-specific gotchas
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Sign-in popup loops or fails with `redirect_uri_mismatch` | Credential Manager redirect URI not added to `foundry-mcp-client` | Add it under Authentication → Web platform |
+| `consent_required` on first sign-in | Admin consent not granted on `foundry-mcp-client` for `access_as_user` | Click **Grant admin consent** on that app reg |
+| MCP call returns `401` from APIM | Token audience wrong, or APIM still requires subscription key (Foundry doesn''t send `Ocp-Apim-Subscription-Key`) | Verify Scopes string includes the full `api://<MIDDLETIER>/access_as_user`; disable subscription on the API or inject the key in policy |
+| MCP call returns `500` | OBO exchange failed downstream (e.g. missing Graph admin consent on `apim-obo-middletier`) | See [Troubleshooting → 500 after validate-jwt passes](#500-internal-server-error-after-validate-jwt-passes) |
+| Refresh token never issued | `offline_access` not in Scopes | Add `offline_access` to the Scopes field |
 
 ---
 
@@ -568,130 +681,3 @@ GET https://mmz-apim-std.azure-api.net/graph/v1.0/me   ❌  (becomes .../v1.0/v1
 | Cache key collision with SharePoint flow | Wrong token sent downstream | Use distinct keys (`obo-graph-<oid>`, `obo-sp-<oid>`) |
 | CA blocking OBO | `AADSTS50076` / `interaction_required` | User must satisfy CA at original sign-in |
 | Throttling | `429 Too Many Requests` from Graph | Cache OBO tokens; honor `Retry-After`; back off |
-
-
----
-
-## Wiring up an AI Foundry MCP tool (OAuth Identity Passthrough)
-
-This section describes how to plug the OBO-protected APIM endpoint into an
-**AI Foundry agent** as an MCP tool, using the **OAuth Identity Passthrough**
-auth mode. With this mode, Foundry runs an OAuth 2.0 auth-code flow against
-Entra to obtain a *user* token, then attaches it as `Authorization: Bearer`
-to every MCP request. APIM''s `validate-jwt` policy validates that token,
-performs the OBO exchange, and forwards to Graph as the user.
-
-### Architecture
-
-```
-User ──> AI Foundry Agent ──(MCP + user bearer)──> APIM ──(OBO swap)──> Microsoft Graph
-                  │
-                  └── auth-code flow (PKCE) brokered by APIM Credential Manager
-                      against Entra, using the foundry-mcp-client app reg
-```
-
-### App registrations involved
-
-You should now have **three** app registrations:
-
-| App registration | Role | Holds secret? |
-|---|---|---|
-| `apim-obo-middletier` | The OBO middle tier. Holds Graph delegated permissions. APIM uses its client secret to perform the OBO exchange. | ✅ Yes (used by APIM) |
-| `foundry-mcp-client` | The OAuth client Foundry uses to sign users in. Has delegated permission to call `apim-obo-middletier/access_as_user`. | ✅ Yes (given to Foundry) |
-| *(optional)* test client / Azure CLI pre-auth | For ad-hoc local testing | No |
-
-### Step F1 — Create the `foundry-mcp-client` app registration
-
-In **Entra ID → App registrations → + New registration**:
-
-- Name: `foundry-mcp-client`
-- Supported account types: single tenant
-- Redirect URI: leave blank for now — you''ll add the APIM Credential Manager
-  URL once Foundry generates it.
-
-After creation:
-
-1. **Certificates & secrets → + New client secret** → copy the *value* (you''ll
-   paste it into Foundry).
-2. **API permissions → + Add a permission → My APIs → `apim-obo-middletier`
-   → Delegated → ✅ `access_as_user` → Add permissions**.
-3. Click **Grant admin consent for `<tenant>`**.
-
-   > Even though `access_as_user` shows "Admin consent required: No",
-   > granting it once at the tenant level avoids per-user consent prompts
-   > inside the agent UI (APIM Credential Manager doesn''t always surface
-   > them cleanly).
-
-4. *(Optional but recommended)* On `apim-obo-middletier` →
-   **Expose an API → Authorized client applications → + Add**:
-   - Client ID: `<foundry-mcp-client app id>`
-   - ✅ `access_as_user`
-
-   This pre-authorizes the Foundry client so users skip the consent dialog
-   entirely.
-
-### Step F2 — Add the MCP tool in Foundry
-
-In your AI Foundry project: **Agent → Tools → + Add → Model Context Protocol**.
-
-Fill in the dialog:
-
-| Field | Value |
-|---|---|
-| **Name** | `apim-get-user-details` (or whatever describes the tool) |
-| **Remote MCP Server endpoint** | Your APIM MCP endpoint, e.g. `https://mmz-apim-std.azure-api.net/graph` |
-| **Authentication** | **OAuth Identity Passthrough** |
-| **Client ID** | `<foundry-mcp-client app''s Application (client) ID>` |
-| **Client secret** | the secret value from Step F1 |
-| **Auth URL** | `https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/authorize` |
-| **Token URL** | `https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token` |
-| **Refresh URL** | `https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token` (same as Token URL for v2) |
-| **Scopes** | `api://<APIM_OBO_MIDDLETIER_CLIENT_ID>/access_as_user offline_access openid profile` |
-
-> 🔑 The `offline_access` scope is what makes Entra issue a refresh token,
-> so Foundry can use the Refresh URL.
-
-Click **Connect**.
-
-### Step F3 — Add the APIM Credential Manager redirect URI
-
-After clicking Connect, Foundry shows a dialog like *"You''ve created a
-credential provider"* with a redirect URL such as:
-
-```
-https://global.consent.azure-apim.net/redirect/<guid>-<connection-name>
-```
-
-Copy that URL, then in Entra:
-
-1. **App registrations → `foundry-mcp-client` → Authentication**
-2. Under **Web platform** (add a Web platform if missing) → **+ Add URI** →
-   paste the URL.
-3. Leave **Implicit grant and hybrid flows** checkboxes **unchecked** —
-   auth-code with PKCE doesn''t need them.
-4. **Save**.
-
-Back in Foundry, finish the connection. You''ll be redirected through Entra
-sign-in once; on success the connection should show ✅.
-
-### Step F4 — Sanity test
-
-In the Foundry agent playground, invoke the tool. Expected behavior:
-
-1. First call → Foundry pops a sign-in window (only on first use per user).
-2. After sign-in, the agent calls APIM with `Authorization: Bearer <user-token>`.
-3. APIM validates, performs OBO, calls Graph as the user, returns the result.
-
-If something fails, see the [Troubleshooting](#troubleshooting) section above —
-most common failures are missing admin consent, missing redirect URI, or
-the APIM API still requiring a subscription key (Foundry won''t send one).
-
-### Foundry-specific gotchas
-
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| Sign-in popup loops or fails with `redirect_uri_mismatch` | Credential Manager redirect URI not added to `foundry-mcp-client` | Add it under Authentication → Web platform |
-| `consent_required` on first sign-in | Admin consent not granted on `foundry-mcp-client` for `access_as_user` | Click **Grant admin consent** on that app reg |
-| MCP call returns `401` from APIM | Token audience wrong, or APIM still requires subscription key (Foundry doesn''t send `Ocp-Apim-Subscription-Key`) | Verify Scopes string includes the full `api://<MIDDLETIER>/access_as_user`; disable subscription on the API or inject the key in policy |
-| MCP call returns `500` | OBO exchange failed downstream (e.g. missing Graph admin consent on `apim-obo-middletier`) | See [Troubleshooting → 500 after validate-jwt passes](#500-internal-server-error-after-validate-jwt-passes) |
-| Refresh token never issued | `offline_access` not in Scopes | Add `offline_access` to the Scopes field |
