@@ -11,7 +11,8 @@ design choices).
 |---|---|
 | OBO to **SharePoint REST** | [`obo-foundry-apim-sharepoint.md`](./obo-foundry-apim-sharepoint.md) |
 | OBO to **Microsoft Graph** | [`obo-foundry-apim-graph.md`](./obo-foundry-apim-graph.md) |
-| **Multi-tenant external access** (no B2B guests) | [`obo-foundry-apim-multitenant.md`](./obo-foundry-apim-multitenant.md) |
+| **Multi-tenant external access** — Option A: multi-tenant Entra app reg | [`obo-foundry-apim-multitenant.md`](./obo-foundry-apim-multitenant.md) |
+| **Multi-tenant external access** — Option B: Entra External ID (CIAM) | [`multitenant-external-id.md`](./multitenant-external-id.md) |
 
 ---
 
@@ -103,6 +104,81 @@ differ only in:
 | `accessTokenAcceptedVersion = 1` | Both | Set to `2` in the app manifest |
 | Conditional Access blocking OBO | Mostly Graph | User's original sign-in must satisfy CA |
 | Ignoring downstream throttling | Mostly Graph | Honor `Retry-After`; back off |
+
+---
+
+## Multi-Tenant External Access: Two Approaches
+
+When external (non-employee) users need to call your agent and you've ruled
+out B2B guests, there are two valid identity models. Both keep external
+users out of your workforce tenant; both end at the same per-agent-MI
+backend pattern. They differ only in **where the user signs in** and
+**whether the partner admin has to do anything**.
+
+| | **Option A — Multi-tenant Entra app reg** [`obo-foundry-apim-multitenant.md`](./obo-foundry-apim-multitenant.md) | **Option B — Entra External ID (CIAM)** [`multitenant-external-id.md`](./multitenant-external-id.md) |
+|---|---|---|
+| Where users sign in | Their own Entra tenant (Tenant B) | Your separate **External ID tenant** (federated to Tenant B / Google / email OTP / …) |
+| Partner admin involvement | One-time admin consent in Tenant B (per partner) | **None** — fully self-service (signup or invite) |
+| Token issuer | Each partner's tenant | One — your External ID tenant |
+| "Which partner is this user?" | The `tid` claim | A custom claim (`partnerId`), app role, or group |
+| APIM allowlist enforcement | `<issuers>` (one entry per partner) | Single `<issuer>` + `<required-claims>` on the partner ID claim |
+| Works when partner isn't on Entra | ❌ no | ✅ yes |
+| Operational ceiling | ~10–25 partners before chasing consent gets painful | Hundreds+ |
+
+### Pros / cons
+
+**Option A — Multi-tenant Entra app reg**
+
+- ✅ **Simpler infrastructure** — no extra tenant to operate, no separate
+  user directory, no user-flow UX to design.
+- ✅ **Native partner SSO** — partner users use their existing Entra
+  credentials. Nothing new to remember.
+- ✅ **Strong identity assurance** — the partner's IT department vetted the
+  user; you inherit that trust automatically.
+- ✅ **Conditional Access stays with the partner** — their MFA, device
+  compliance, and risk policies apply to your app for free.
+- ❌ **Requires a partner-side admin to act**, at least once. Some partners
+  are slow, unresponsive, or don't have a clear admin contact.
+- ❌ **Doesn't work if the partner isn't on Entra** (small companies,
+  consultants, individuals).
+- ❌ **Per-partner overhead** — adding each new partner means updating the
+  `<issuers>` allowlist (and routing maps).
+- ❌ **No control over the user experience** — sign-in, MFA prompts, etc.
+  all look like *their* tenant, not yours.
+
+**Option B — Entra External ID (CIAM)**
+
+- ✅ **Zero partner-admin friction** — no consent dance, no chasing IT
+  departments. Users sign up themselves.
+- ✅ **Works for non-Entra partners** — accept Google, email OTP, or any
+  social IdP. Or federate to Tenant B Entra when you want SSO.
+- ✅ **Scales to many partners** — onboarding a partner is a config row, not
+  a tenant negotiation.
+- ✅ **You control the sign-in experience** — branded user flows, custom
+  password/MFA policies, your own consent screens.
+- ✅ **Single token issuer** = simpler `validate-jwt` (one issuer, one
+  audience).
+- ❌ **Extra Entra tenant to operate** — App registrations, user-flow
+  policies, identity providers, monitoring. It's a real product surface.
+- ❌ **Identity assurance is on you** — you must verify users (email
+  verification, domain restriction, invite gating) instead of inheriting
+  the partner's vetting.
+- ❌ **No automatic partner SSO** unless you explicitly configure
+  federation per partner.
+- ❌ **No automatic Conditional Access from the partner** — their device
+  compliance / MFA policies don't reach your app. You configure your own.
+- ❌ **Custom claims need careful setup** — emitting `partnerId` as a token
+  claim isn't on by default; it's a manifest + token-config step that's
+  easy to forget.
+
+### Picking one
+
+- **Few partners, all on Entra, you can reach the admins** → **Option A**.
+- **Many partners, mixed identity providers, or you need self-service
+  signup** → **Option B**.
+- **Both at once** is supported — APIM can accept tokens from either issuer
+  and normalize the partner key downstream (see the "Running Option A and
+  Option B side by side" section in [`multitenant-external-id.md`](./multitenant-external-id.md#running-option-a-and-option-b-side-by-side)).
 
 ---
 

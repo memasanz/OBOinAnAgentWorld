@@ -43,25 +43,25 @@ no `send-request` to AAD, no Graph permissions, no MCP-OAuth client app reg.
 
 ## Deployment options at a glance
 
-There are two viable deployment shapes. Pick based on **how many partners**
-you'll onboard and **how strong** an isolation guarantee you need to make.
+There are two valid identity models for "users in another organization
+calling our agent." Pick based on **whether the partner has Entra** and
+**whether you want to involve the partner admin at all**.
 
-| | **Option A — Foundry project per partner** (recommended for ≤ ~25 partners) | **Option B — one shared external Foundry project** (recommended when partner count is large) |
+| | **Option A — Multi-tenant Entra app reg** | **Option B — Entra External ID (CIAM)** |
 |---|---|---|
-| Foundry projects | One per partner + one for internal users | Two total: one for internal, one shared by **all** external partners |
-| Foundry MIs | One MI per partner, RBAC scoped to that partner's slice | One shared external MI; RBAC spans **all** external data slices |
-| Cross-partner isolation | **Azure RBAC** — hard wall, IAM-enforced | **Agent code + APIM headers** — soft wall, logic-enforced |
-| Cross-user isolation | Agent code filters by `oid` | Agent code filters by `(tid, oid)` |
-| Per-partner data slices | Yes — required for the IAM wall | Optional but strongly recommended (per-partner Cosmos containers, Search indexes) |
-| Per-partner customization (prompts, tools, models) | High — each project is independent | Low — one config serves all |
-| Ops cost | Linear in # partners (project, MI, RBAC, mapping per partner) | Flat |
-| Blast radius of an agent-code bug | One partner's users | All external partners |
-| Best for | Small number of high-trust partners; regulated/contractual isolation requirements | High-volume / many-partner SaaS where ops cost dominates |
+| Where partner users' accounts live | Their own Entra tenant (Tenant B) | **Your External ID tenant** (a separate Entra tenant you own) |
+| Identity provider for the user | Tenant B Entra | Your External ID tenant — federated to Tenant B (Entra), Google, email OTP, etc. |
+| Partner admin involvement | **Required**: one-time admin consent in Tenant B | **Not required**: users sign up themselves, or you invite them via email |
+| Scales to "many partners" | Limited by ability to chase down each partner admin for consent | Yes — fully self-service onboarding |
+| `tid` claim in the user token | Partner's tenant ID | **Always your External ID tenant ID** — partner identity comes from a custom claim (e.g., `extension_partnerId`) or app role |
+| Tenant allowlist enforcement | APIM `<issuers>` allowlist (one issuer per partner) | APIM allows the single External ID issuer; partner allowlist is a claim check |
+| Works when partner is not on Entra | ❌ no | ✅ yes (federate to Google / email OTP / etc.) |
+| Best for | Small number of B2B partners with their own Entra | High-volume / many partners; or partners not on Entra |
 
-The body of this document walks through **Option A** in detail. Option B is
-described as a focused delta near the end ([jump to Option B](#option-b--one-shared-external-foundry-project)).
-Both options share the same `agent-host-webapp` registration, the same
-`validate-jwt`/issuer-allowlist policy, and the same one-time-consent story.
+The body of this document walks through **Option A** in detail. For Option B
+(Entra External ID), see **[`multitenant-external-id.md`](./multitenant-external-id.md)**.
+Both options share the same per-agent-MI backend pattern; only the identity
+layer (and the APIM `validate-jwt` policy) differs.
 
 ---
 
@@ -503,147 +503,6 @@ Cosmos DB / Search index / Storage container.
 
 ---
 
-## Option B — one shared external Foundry project
-
-Use this when you have **too many partners** to make per-partner Foundry
-projects practical (think dozens to hundreds), or when partner customization
-isn't a requirement and you want flat ops cost.
-
-### What changes vs. Option A
-
-| Concern | Option A | Option B |
-|---|---|---|
-| Foundry projects | N partners → N projects (+ 1 internal) | 1 external + 1 internal, total |
-| Foundry managed identity | Per-partner MI | **One shared external MI** |
-| Cross-partner isolation | Azure RBAC | **Agent code** (`tid` filter on every read/write) + APIM-injected `x-user-tid` header |
-| `PARTNER_FOUNDRY_MAP` Named Value | Required (one URL per tenant) | **Removed** — single backend URL |
-| APIM `<issuers>` allowlist | Required | Required (unchanged) |
-| `agent-host-webapp` | Same | Same |
-| `validate-jwt` policy | Same | Same |
-| Onboarding (per partner) | Provision project, slice, MI, RBAC, mapping row | Provision **data slice only**, grant the shared MI RBAC on it |
-
-### Architecture (Option B)
-
-```
-┌─────────────────────────┐                  ┌──────────────────────────────────────────────────┐
-│   Partner tenant (B)    │                  │   Your tenant (A)                                │
-│   …same as Option A…    │                  │                                                  │
-│                         │                  │   ┌────────────────────────────────┐             │
-│                         │                  │   │ APIM /chat                     │             │
-│                         │                  │   │ - validate-jwt (issuer ∈ B,C…) │             │
-│                         │                  │   │ - extract tid, oid             │             │
-│                         │                  │   │ - x-user-tid / x-user-oid hdrs │             │
-│                         │                  │   │ - rate-limit by (tid, oid)     │             │
-│                         │                  │   └──────────────┬─────────────────┘             │
-│                         │                  │                  │                               │
-│                         │                  │                  ▼                               │
-│                         │                  │   ┌────────────────────────────────────────┐     │
-│                         │                  │   │ External Foundry project (shared)      │     │
-│                         │                  │   │ ┌──────────────────────────────────┐   │     │
-│                         │                  │   │ │ Agent + MCP tools                │   │     │
-│                         │                  │   │ │ - read x-user-tid / x-user-oid   │   │     │
-│                         │                  │   │ │ - resolve tid → partner slice    │   │     │
-│                         │                  │   │ │ - filter all queries by tid+oid  │   │     │
-│                         │                  │   │ └────────────┬─────────────────────┘   │     │
-│                         │                  │   │              │ direct call as           │     │
-│                         │                  │   │              │ shared external MI        │     │
-│                         │                  │   └──────────────┼──────────────────────────┘     │
-│                         │                  │                  ▼                               │
-│                         │                  │   ┌────────────────────────────────┐             │
-│                         │                  │   │ Per-partner data slices (all)  │  ◄── RBAC: │
-│                         │                  │   │ - partnerB-conv, partnerB-kb…  │   shared   │
-│                         │                  │   │ - partnerC-conv, partnerC-kb…  │   ext. MI  │
-│                         │                  │   │ - partnerD-conv, partnerD-kb…  │   on ALL   │
-│                         │                  │   └────────────────────────────────┘             │
-└─────────────────────────┘                  └──────────────────────────────────────────────────┘
-```
-
-### Isolation in Option B — what's actually enforcing what
-
-| Layer | What it isolates | How it's enforced | Failure mode |
-|---|---|---|---|
-| **APIM `validate-jwt`** | Random tenants from calling at all | `<issuers>` allowlist | Forget to add tenant → 401 (safe-fail) |
-| **APIM header injection** | Client lying about its identity | `x-user-tid`/`x-user-oid` set from JWT claims; Foundry only accepts traffic from APIM | Skip override → client could spoof |
-| **Agent code `tid` filter** | Cross-partner data access | Every query/write gates on `tid` from header | **Bug here = cross-partner leak** ⚠️ |
-| **Agent code `oid` filter** | Cross-user-within-partner access | Every query/write also gates on `oid` | Bug = within-partner leak |
-
-The thing to internalize: in Option B the `tid` filter is the **only** wall
-between Partner B and Partner C. There is no IAM safety net. That's the
-trade-off you accept in exchange for flat ops cost.
-
-### Patterns to make Option B safer
-
-1. **Per-partner data slices anyway.** Even though one shared MI has RBAC on
-   all of them, having physical containers/indexes per partner means a
-   missing `tid` filter shows up as "no results" instead of "wrong results"
-   — because the query is hitting the wrong container. Strongly recommended.
-2. **Resolve the slice once at the request boundary, in one place.** Don't
-   let every tool reach for `headers["x-user-tid"]` and build container
-   names. Centralize:
-   ```python
-   # one helper used by every tool
-   def caller_context(headers):
-       tid = headers["x-user-tid"]
-       oid = headers["x-user-oid"]
-       slice_ = PARTNER_SLICE_MAP[tid]   # raises KeyError → 403
-       return tid, oid, slice_
-   ```
-   Then tools take `slice_` as a parameter — no tool ever picks the
-   partition itself.
-3. **Wrap the data clients.** Have `get_cosmos_container(slice_)` /
-   `get_search_client(slice_)` factories. Static analysis / code review can
-   then verify "no raw `CosmosClient` access in tool code."
-4. **Add a defense-in-depth `tid` predicate at the data layer.** If your
-   schema includes `tid` on every document, add it as a mandatory filter in
-   the wrapper, not only in the tool's query. Two independent checks for
-   one bug = both have to fail.
-5. **Tag every log line with `tid` + `oid`.** Auditing a suspected leak in
-   Option B is much harder than in Option A. Make sure you can answer "did
-   any request carrying `tid=B` ever read data tagged `tid=C`?" from logs
-   alone.
-6. **Per-partner rate limit at APIM.** Already shown in `<rate-limit-by-key>`
-   — keeps a single bad actor from starving others on the shared backend.
-
-### Onboarding deltas (Option B)
-
-| # | Owner | Action |
-|---|---|---|
-| 1 | You | Provision the partner's **data slice** in Tenant A (Cosmos container, Search index, Storage container). |
-| 2 | You | Grant the **shared external Foundry MI** RBAC on the new slice. |
-| 3 | You | Add an entry to `PARTNER_SLICE_MAP` (in Foundry project env / config). |
-| 4 | You | Add `https://login.microsoftonline.com/<partnerTenantId>/v2.0` to APIM `<issuers>`. |
-| 5 | You | Send the partner admin the one-time consent URL. |
-| 6 | Partner | Grant admin consent. |
-| 7 | Both | Smoke test. |
-
-No new Foundry project, no new MI, no APIM mapping update.
-
-### Off-boarding (Option B)
-
-- **Remove the partner's `<issuer>`** → APIM rejects all their tokens.
-- **Remove the partner from `PARTNER_SLICE_MAP`** → agent returns 403 even
-  if a token slipped through.
-- **Delete the partner's data slice** → physically removes data; remaining
-  RBAC binding to the shared MI becomes inert.
-
-### When Option B starts hurting — signals to migrate to Option A
-
-- A partner contractually requires "our data is isolated by Azure RBAC, not
-  application logic."
-- A specific partner needs a different model, different system prompt, or
-  custom MCP tools.
-- A regulated workload (HIPAA, FedRAMP, financial) lands and needs a
-  defensible IAM-level isolation story.
-- You hit a security review that won't accept "the `tid` filter prevents
-  cross-partner leakage."
-
-Migrating one partner from Option B to Option A is straightforward: stand up
-their dedicated Foundry project + MI, scope the MI to their (existing)
-slice, add the partner to `PARTNER_FOUNDRY_MAP`, and route them via APIM
-instead of through the shared backend. The data slice itself doesn't move.
-
----
-
 ## Common pitfalls (multi-tenant specific)
 
 - **Forgetting the `<issuers>` allowlist.** Using `organizations/v2.0` for
@@ -680,18 +539,6 @@ instead of through the shared backend. The data slice itself doesn't move.
   separate `/graph` API following the OBO docs — that API uses
   `apim-obo-middletier` (with secret + Graph permissions) alongside the
   no-OBO pieces here. The two patterns coexist in the same APIM instance.
-- **(Option B) Forgetting the `tid` filter on a single query path.** In
-  Option A this is a within-partner bug; in Option B it is a cross-partner
-  data leak. Treat every new MCP tool as a code-review blocker until you've
-  confirmed it routes through the centralized `caller_context`/wrapper
-  helpers.
-- **(Option B) Per-partner data slices but the shared MI scoped at
-  subscription level.** Defeats the point — and makes auditors very unhappy.
-  Always scope the role assignment to the specific container/index/account.
-- **(Option B) Customizing for one partner.** As soon as you fork the system
-  prompt or wire up a partner-specific tool, you've created a hidden
-  Option-A requirement inside an Option-B project. Either move that partner
-  to their own project, or push back on the customization.
 
 ---
 
