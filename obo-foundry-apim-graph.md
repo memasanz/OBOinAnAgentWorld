@@ -152,10 +152,49 @@ Reuse the existing named values; add one for the Graph base URL if you like:
 
 ---
 
-## Step 4 — APIM Policy: Validate Inbound Token + Perform OBO for Graph
+## Step 4 — Create the API and Add an Operation in APIM
 
-Apply this on the `graph` API in APIM. The only differences vs. the SharePoint
-policy are the **OBO scope** and the **backend base URL**.
+### Create the API
+
+**APIs → + Add API → HTTP** (manual entry).
+
+| Field | Value |
+|---|---|
+| Display name | `Microsoft Graph (OBO)` |
+| Name | `graph-obo` |
+| Web service URL | `https://graph.microsoft.com/v1.0` |
+| API URL suffix | `graph` |
+| Products | (pick one, e.g., `Unlimited` for testing) |
+
+Click **Create**.
+
+### Add an Operation
+
+On the new API → **+ Add operation**:
+
+| Field | Value |
+|---|---|
+| Display name | `Get me` |
+| Name | `get-me` |
+| URL | `GET /me` |
+
+Click **Save**.
+
+![Add operation: Get me — GET /me](./images/expose_api_04.jpg)
+
+---
+
+## Step 5 — APIM Policy: Validate Inbound Token + Perform OBO for Graph
+
+On the `Microsoft Graph (OBO)` API → **Design** tab → select **All operations**
+(top of the operation list, so the policy applies to every operation). In the
+**Inbound processing** box, click the **`</>`** icon to open the policy code
+editor.
+
+![Click the </> icon in Inbound processing to open the policy editor](./images/expose_api_05.jpg)
+
+Replace the contents with the policy below. The only differences vs. the
+SharePoint policy are the **OBO scope** and the **backend base URL**.
 
 ```xml
 <policies>
@@ -252,9 +291,10 @@ policy are the **OBO scope** and the **backend base URL**.
 
 ---
 
-## Step 5 — Test End-to-End
+## Step 6 — Test End-to-End
 
-1. Get a user token for `api://<APIM_OBO_MIDDLETIER_CLIENT_ID>/access_as_user`.
+1. Get a user token for `api://<APIM_OBO_MIDDLETIER_CLIENT_ID>/access_as_user`
+   (see [Testing with the Azure CLI](#testing-with-the-azure-cli) below).
 2. Decode at <https://jwt.ms> — confirm `aud`, `scp`, and `oid`.
 3. Call the APIM endpoint:
    ```http
@@ -263,6 +303,53 @@ policy are the **OBO scope** and the **backend base URL**.
    ```
 4. APIM **Test console → Enable tracing** to inspect the OBO exchange and the
    downstream Graph call.
+
+### Testing with the Azure CLI
+
+For ad-hoc testing you don't need a separate test client app — you can have the
+**Azure CLI** request a token for the middle-tier app. The Azure CLI has a
+well-known public client ID (`04b07795-8ddb-461a-bbee-02f9e1bf7b46`) that
+Microsoft publishes for exactly this purpose.
+
+> 💡 The AI Foundry agent itself does **not** use this; it has its own client
+> credentials. Pre-authorizing the Azure CLI only affects what *you* can do
+> from your terminal — it adds no redirect URIs and does not enable public
+> client flows on the middle-tier app.
+
+**One-time setup** — on the `apim-obo-middletier` app registration:
+
+**Expose an API → Authorized client applications → + Add a client application**
+
+| Field | Value |
+|---|---|
+| Client ID | `04b07795-8ddb-461a-bbee-02f9e1bf7b46` (Microsoft Azure CLI) |
+| Authorized scopes | ✅ `api://<APIM_OBO_MIDDLETIER_CLIENT_ID>/access_as_user` |
+
+Click **Add application**.
+
+![Authorized client applications — add Azure CLI](./images/expose_api_06.jpg)
+
+**Get a token and call APIM:**
+
+```powershell
+az login --tenant <tenant-id>
+
+$token = az account get-access-token `
+  --resource "api://<APIM_OBO_MIDDLETIER_CLIENT_ID>" `
+  --query accessToken -o tsv
+
+# Sanity check at https://jwt.ms — verify:
+#   aud = api://<APIM_OBO_MIDDLETIER_CLIENT_ID>
+#   scp contains access_as_user
+#   oid = your user object id
+$token
+
+curl.exe -H "Authorization: Bearer $token" `
+  "https://mmz-apim-std.azure-api.net/graph/v1.0/me"
+```
+
+If you skip the authorized-client-application step, `az account get-access-token`
+fails with `AADSTS65001` (the Azure CLI hasn't been consented to call your API).
 
 ---
 
